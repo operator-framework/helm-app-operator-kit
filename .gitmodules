@@ -1,0 +1,3 @@
+[submodule "lostromos"]
+	path = lostromos
+	url = git@github.com:wpengine/lostromos.git

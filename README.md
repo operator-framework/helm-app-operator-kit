@@ -4,18 +4,22 @@ This repository serves as a template for easily creating managed stateless appli
 
 ## Creating and registering the sample application type
 
+To create and register the sample application type in your Tectonic cluster, run the `generate-and-install-example.sh` script, and follow its instructions.
+
+## Creating and registering the sample application type (manually)
+
 To create and register the sample application type in your Tectonic cluster:
 
 1) Replace all instances of `YOUR_NAMESPACE_HERE` in the `yaml` files found in this directory with the Kubernetes namespace in which you wish to register the new application type:
 
 ```sh
-sed -i.orig 's/YOUR_NAMESPACE_HERE/mynamespace/g' *.php
+sed -i.orig 's/YOUR_NAMESPACE_HERE/mynamespace/g' *.yaml
 ```
 
 2) Replace all instances of `YOUR_REPO_IMAGE_HERE` in the `yaml` files found in this directory with the container repository in which you wish to store the built operator:
 
 ```sh
-sed -i.orig 's/YOUR_REPO_IMAGE_HERE/quay.io\/mynamespace\/mysampleapp/g' *.php
+sed -i.orig 's/YOUR_REPO_IMAGE_HERE/quay.io\/mynamespace\/mysampleapp/g' *.yaml
 ```
 
 3) Build and push the stateless app operator:

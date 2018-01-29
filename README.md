@@ -37,3 +37,19 @@ kubectl create -f example-app-operator.v0.0.1.clusterserviceversion.yaml
 ```
 
 5) Wait a minute or two for the application kind to register
+
+## Creating an instance of the example application
+
+To create an instance of the example application, create the following custom resource:
+
+```yaml
+apiVersion: example-apps.example.com/v1alpha1
+kind: ExampleApp
+metadata:
+  name: sample-example
+  namespace: YOUR_NAMESPACE_HERE
+spec:
+  size: 2
+```
+
+Note that the `size` is pulled into the nginx template in `example-templates/deployment.yaml.tmpl`.

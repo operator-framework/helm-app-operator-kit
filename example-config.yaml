@@ -2,7 +2,7 @@
 #
 # This file contains configuration for lostromos for the example application. It defines how
 # lostromos will deploy each instance of your application. By default, the templates found in the
-# /templates directory in the built image will be used.
+# /chart directory in the built image will be used.
 #
 # If the CustomResourceDefinition (CRD) for this application is modified, please make sure to
 # adjust the reference in the `crd` block below.
@@ -11,7 +11,9 @@ crd:
   name: example-apps
   version: v1alpha1
   namespace: YOUR_NAMESPACE_HERE
-templates: /templates
+helm:
+  chart: /chart
+  namespace: YOUR_NAMESPACE_HERE
 logging:
   debug: true
   pretty: true

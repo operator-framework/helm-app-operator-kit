@@ -1,0 +1,21 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: {{ .Values.resource.name }}-hello
+  labels:
+    app: {{ .Values.resource.name }}-hello
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.resource.spec.size }}
+  template:
+    metadata:
+      labels:
+        resource: {{ .Values.resource.name }}
+    spec:
+      containers:
+      - name: hello
+        image: {{ .Values.image }}
+        ports:
+        - containerPort: 80

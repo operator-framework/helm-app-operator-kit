@@ -12,7 +12,37 @@ metadata:
 spec:
   install: 
     strategy: deployment
-    spec: 
+    spec:
+      permissions:
+      - serviceAccountName: example-app-operator
+        rules:
+        - apiGroups:
+          - example.com
+          resources:
+          - example-apps
+          verbs:
+          - "*"
+        - apiGroups:
+          - ""
+          resources:
+          - pods
+          - events
+          - namespaces
+          verbs:
+          - "*"
+        - apiGroups:
+          - ""
+          resources:
+          - "namespaces"
+          verbs:
+          - "get"
+        - apiGroups:
+          - apps
+          - extensions
+          resources:
+          - deployments
+          verbs:
+          - "*"
       deployments: 
       - name: example-app-operator
         spec:
@@ -31,9 +61,11 @@ spec:
                   ports:
                     - containerPort: 8080
                       protocol: TCP
-                  imagePullPolicy: IfNotPresent
+                  imagePullPolicy: Always
               restartPolicy: Always
               terminationGracePeriodSeconds: 5
+              serviceAccountName: example-app-operator
+              serviceAccount: example-app-operator
   customresourcedefinitions:
     owned:
       - description: Represents a cluster of example apps

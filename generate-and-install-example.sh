@@ -22,7 +22,7 @@ trap cleanup EXIT
 # Copy the yaml files and Dockerfile into the temp directory
 cp Dockerfile $TEMP_DIR
 cp *.yaml $TEMP_DIR
-cp -r example-templates $TEMP_DIR/
+cp -r example-chart $TEMP_DIR/
 cd $TEMP_DIR
 
 # Replace all required "variables"

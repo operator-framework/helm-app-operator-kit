@@ -1,14 +1,14 @@
 # Installing a custom Helm-based app
 
 While all ClusterServiceVersion-v1 resources require an operator, not all applications will require developers to write a custom operator.
-The [Helm App Operator Kit] makes it possible to leverage a pre-existing Helm chart in order to deploy a series of Kubernetes resources as a unified application.
+The [Helm App Operator Kit][helm-sdk] makes it possible to leverage a pre-existing Helm chart in order to deploy a series of Kubernetes resources as a unified application.
 
 ```sh
 git clone https://github.com/coreos/helm-app-operator-kit
 cd helm-app-operator-kit
 ```
 
-In order to create a new application, there is a shell script or manual instructions for executing what the shell script automates.
+To create a new application, the Helm App Operator kit provides both a shell script and instructions to manually execute what the shell script automates.
 
 ## Scripted
 
@@ -23,7 +23,7 @@ Enter the Docker repository in which to place the built operator (example: quay.
 
 ## Manual
 
-To create and register the sample application type in your Tectonic cluster:
+To manually create and register the sample application type in your Tectonic cluster:
 
 1) Replace all instances of `YOUR_NAMESPACE_HERE` in the `yaml` files found in this directory with the Kubernetes namespace in which you wish to register the new application type:
 
@@ -37,7 +37,7 @@ sed -i.orig 's/YOUR_NAMESPACE_HERE/mynamespace/g' *.yaml
 sed -i.orig 's#YOUR_REPO_IMAGE_HERE#quay.io/mynamespace/mysampleapp#g' *.yaml
 ```
 
-3) Build and push an image of the operator that contains the example Helm chart.
+3) Build and push an image of the operator that contains the example Helm chart:
 
 ```sh
 docker build -t quay.io/mynamespace/mysampleapp:latest .
@@ -69,4 +69,7 @@ spec:
 EOF
 ```
 
-Note that the contents of the `spec` block is the contents used in the chart in `example-chart/values.yaml`
+Note that the contents of the `spec` block is the contents used in the chart in `example-chart/values.yaml`.
+
+
+[helm-sdk]: https://github.com/coreos/helm-app-operator-kit

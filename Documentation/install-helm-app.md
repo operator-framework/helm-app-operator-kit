@@ -23,7 +23,7 @@ Enter the Docker repository in which to place the built operator (example: quay.
 
 ## Manual
 
-To mnually create and register the sample application type in your Tectonic cluster:
+To manually create and register the sample application type in your Tectonic cluster:
 
 1) Replace all instances of `YOUR_NAMESPACE_HERE` in the `yaml` files found in this directory with the Kubernetes namespace in which you wish to register the new application type:
 
@@ -72,4 +72,4 @@ EOF
 Note that the contents of the `spec` block is the contents used in the chart in `example-chart/values.yaml`.
 
 
-[helm-sdk]: ../
+[helm-sdk]: https://github.com/coreos/helm-app-operator-kit

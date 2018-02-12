@@ -1,4 +1,4 @@
-# Stateless App Operator
+# Helm App Operator Kit
 
 This repository serves as a template for easily creating managed stateless applications that run either Kubernetes Deployments or Helm charts.
 

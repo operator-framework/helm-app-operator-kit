@@ -2,7 +2,7 @@ This project is a component of the [Operator Framework](https://github.com/opera
 
 # Helm App Operator Kit
 
-This repository serves as a template for easily creating managed stateless applications that run either Kubernetes Deployments or Helm charts.
+This repository serves as a template for easily creating managed stateless applications that run either Kubernetes Deployments or Helm charts. It builds upon the [Lostromos project](https://github.com/wpengine/lostromos).
 
 ## Getting Started
 

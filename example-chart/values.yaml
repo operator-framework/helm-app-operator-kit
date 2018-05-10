@@ -1,1 +1,1 @@
-image: nginx
+image: docker.io/nginx:latest

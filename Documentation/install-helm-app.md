@@ -63,7 +63,7 @@ After the CustomResourceDefinition and ClusterServiceVersion-v1 resources for th
 
 ```yaml
 cat <<EOF | kubectl create -f -
-apiVersion: example-apps.example.com/v1alpha1
+apiVersion: example.com/v1alpha1
 kind: ExampleApp
 metadata:
   name: sample-example

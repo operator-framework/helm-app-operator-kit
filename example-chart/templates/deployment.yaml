@@ -9,6 +9,9 @@ metadata:
     heritage: {{ .Release.Service }}
 spec:
   replicas: {{ .Values.resource.spec.size }}
+  selector:
+    matchLabels:
+      resource: {{ .Values.resource.name }}
   template:
     metadata:
       labels:

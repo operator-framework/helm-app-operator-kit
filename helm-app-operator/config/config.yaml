@@ -1,0 +1,3 @@
+apiVersion: app.coreos.com/v1alpha1
+kind: HelmApp
+projectName: helm-app-operator

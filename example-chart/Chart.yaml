@@ -1,4 +1,0 @@
-apiVersion: v1
-description: A Helm chart for testing stateless app operator
-name: helloworld
-version: 0.1.0

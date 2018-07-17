@@ -1,78 +1,94 @@
-# ACTIONS REQUIRED: Replace YOUR_NAMESPACE_HERE with your namespace.
-# ACTIONS REQUIRED: Replace YOUR_REPO_IMAGE_HERE with the name of your built image.
-#
-# This file defines the ClusterServiceVersion (CSV) to tell the catalog how to display, create and
-# manage the application as a whole. If changes are made to the CRD for this application kind,
-# make sure to replace those references below as well.
 apiVersion: app.coreos.com/v1alpha1
 kind: ClusterServiceVersion-v1
 metadata:
-  name: example-app-operator.v0.0.1
-  namespace: YOUR_NAMESPACE_HERE
+  name: <chart>-operator.v0.0.1
 spec:
-  install: 
+  version: 0.0.1
+  displayName: Example Application
+  provider:
+    name: Example Corp
+    url: www.example.com
+  maturity: alpha
+  version: 0.0.1
+  maintainers:
+    - email: corp@example.com
+      name: Some Corp
+  labels:
+    olm-owner-enterprise-app: <chart>-operator
+    olm-status-descriptors: <chart>-operator.v0.0.1
+  description: <Chart description>
+  install:
     strategy: deployment
     spec:
       permissions:
-      - serviceAccountName: example-app-operator
+      - serviceAccountName: <chart>-operator
         rules:
         - apiGroups:
           - example.com
           resources:
-          - example-apps
-          - example-apps/finalizers
+          - "*"
           verbs:
           - "*"
         - apiGroups:
           - ""
           resources:
           - pods
+          - services
+          - endpoints
+          - persistentvolumeclaims
           - events
-          - namespaces
+          - configmaps
+          - secrets
           verbs:
           - "*"
-        - apiGroups:
-          - ""
-          resources:
-          - "namespaces"
-          verbs:
-          - "get"
         - apiGroups:
           - apps
-          - extensions
           resources:
           - deployments
+          - daemonsets
+          - replicasets
+          - statefulsets
           verbs:
           - "*"
-      deployments: 
-      - name: example-app-operator
+      deployments:
+      - name: <chart>-operator
         spec:
           replicas: 1
           selector:
             matchLabels:
-              app: example-app-operator
+              app: <chart>-operator
           template:
             metadata:
               labels:
-                app: example-app-operator
+                app: <chart>-operator
             spec:
               containers:
-                - name: sao
-                  image: YOUR_REPO_IMAGE_HERE
-                  ports:
-                    - containerPort: 8080
-                      protocol: TCP
+                - name: <chart>-operator-olm-owned
+                  image: quay.io/<namespace>/<chart>-operator
                   imagePullPolicy: Always
+                  env:
+                  - name: MY_POD_NAMESPACE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.namespace
+                  - name: WATCH_NAMESPACE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.namespace
+                  - name: MY_POD_NAME
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.name
               restartPolicy: Always
               terminationGracePeriodSeconds: 5
-              serviceAccountName: example-app-operator
-              serviceAccount: example-app-operator
+              serviceAccountName: <chart>-operator
+              serviceAccount: <chart>-operator
   customresourcedefinitions:
     owned:
       - description: Represents a cluster of example apps
         displayName: Example App
         kind: ExampleApp
-        name: example-apps.example.com
+        name: exampleapps.example.com
         version: v1alpha1
         resources:
           - kind: Deployment
@@ -98,19 +114,3 @@ spec:
             path: reason
             x-descriptors:
               - 'urn:alm:descriptor:io.kubernetes.phase:reason'
-  keywords:
-    - example
-    - app
-  displayName: Example Application
-  provider:
-    name: Example Corp
-    url: www.example.com
-  maturity: alpha
-  version: 0.0.1
-  maintainers:
-    - email: corp@example.com
-      name: Some Corp
-  description: Main enterprise application providing business critical features with high availabilty and no manual intervention.
-  labels:
-    alm-owner-enterprise-app: example-app-operator
-    alm-status-descriptors: example-app-operator.v0.0.1

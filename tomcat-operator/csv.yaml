@@ -1,0 +1,122 @@
+apiVersion: app.coreos.com/v1alpha1
+kind: ClusterServiceVersion-v1
+metadata:
+  name: tomcat-operator.v0.0.1
+spec:
+  version: 0.0.1
+  displayName: Tomcat
+  provider:
+    name: Apache Foundation
+    url: apache.org
+  maturity: alpha
+  version: 0.0.1
+  maintainers:
+    - email: guy@apache.org
+      name: Apache Foundation
+  labels:
+    olm-owner-enterprise-app: tomcat-operator
+    olm-status-descriptors: tomcat-operator.v0.0.1
+  description: Tomcat is is an open source implementation of the Java Servlet, JavaServer Pages, Java Expression Language and Java WebSocket technologies.
+  icon:
+  - mediatype: image/svg+xml
+    base64data: PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyBwcmVzZXJ2ZUFzcGVjdFJhdGlvPSJ4TWlkWU1pZCIgdmVyc2lvbj0iMS4xIiB2aWV3Qm94PSIwIDAgMjU2IDE4MiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0ibTQ0LjI5OCAxMTkuMzRjMi45MTIgMy41OTIgNi4xNDkgNy4yMzIgOS43MTIgMTAuODkyLTEwLjM3MiAzLjEyMS0xNy4xNzEgOC45MTYtMjEuNDEzIDE0LjAzMy02LjcxIDguMDk5LTEwLjI2MiAxOC43OTUtOS40NDUgMjcuOTc1aC0xNy44NjFjMy41ODItNy43NzMgMTcuODgtMzAuMjI5IDM5LjAwNy01Mi45IiBmaWxsPSIjRDFBNDFBIi8+CjxwYXRoIGQ9Im0yNTEuMTkgMTc3LjEyaC0yMS43MTdjLTQ5LjgyLTI1Ljk5Ny05My41NTktNDQuMzI5LTE0MC4wMi00OC4zMzQgMC4wOTktNi40NjYgMS4yNS0xMy43ODYgMy40NjQtMjEuOTQ0bC00LjI4LTEuMTUxYy0yLjI3MyA4LjM4My0zLjQ2NCAxNS45Ny0zLjYwMiAyMi43Ni00Ljg0MS0wLjMyNS05LjcxMi0wLjQ4Mi0xNC42MzItMC40ODItNC4xNjMgMC03Ljk2MSAwLjM4NC0xMS40MjQgMS4wNTMtNC41MTctNC41MDctOC4zNjQtOC44MTctMTEuNjMxLTEyLjkgMjEuNDMxLTIyLjMxOCA1Ni43MjgtNDIuNTEgODcuNDQ4LTUwLjEwNiA4LjY1IDI4Ljc1MiAyNy4yMTggNDguNDUyIDQ5Ljc1MSA2MS43MDcgMS42NTMtMC45NDUgMy4yNzctMS45MjkgNC44NzEtMi45NzFsMzkuMzExIDQyLjMyMSAxLjcyMi0wLjE0OGMxMC43MzUtMC45MjQgMTYuODM2IDQuOTAxIDE4LjQ1MSA2LjcxMSAxLjE5IDEuMzE5IDEuODk4IDIuNTMgMi4yOTIgMy40ODQiIGZpbGw9IiNEMUE0MUEiLz4KPHBhdGggZD0ibTIzMi4wMiAzNS41NTZjMC43OTcgMzkuMDU1LTE5LjEyOSA3MC4xNC00Ny4wMjYgODYuMDgxLTQ3LjM1LTIzLjU4Ni01Ni4yNjUtODMuMzU1LTQ4LjE5Ni0xMTUuNDEgMi4yNDMgMTIuMjYxIDYuMzI3IDE5Ljk0NiAxNS4xNDQgMjMuNzE1IDE5LjIyNy01LjUwMSA0NS42ODctNS45MzUgNjUuMTgtMC41NjEgOC4xMTgtNS45MDQgMTEuMjY3LTE0LjkyNyAxMi45ODktMjIuODA5IDIuMTQ1IDkuMTcgMS44OTkgMjguOTg4IDEuOTA5IDI4Ljk4OCIgZmlsbD0iI0ZGREM3NiIvPgo8cGF0aCBkPSJtMTY4LjIyIDQwLjc3NmMxLjYzNyAwIDIuNzg1IDAuNjY1IDMuNjE1IDIuMDg3IDEuOTQ1IDMuMzQ2IDEuNjI2IDkuOTQ2IDAuMDEzIDE2Ljg1MWgtMTMuMDk2djIuODY5aDEyLjM1OWMtMS4zMjYgNC43MTEtMy4xODkgOS4zNzItNS4yODYgMTMuMDY1bC0wLjY3OCAxLjE5NCAxNi4zODYgMTAuMzE0LTkuMjI1IDYuMDc5IDEuNTc5IDIuMzk3IDEwLjMxMS02Ljc5OCAxMS4xMzEgNy4yNjQgMS41MjktMi40MjgtMTAuMzIxLTYuMzg1czE1LjQzMS0xMC4wMjMgMTYuMTk4LTEwLjUxM2MtNWUtMyAtNmUtMyAtOGUtMyAtMC4wMTItMC4wMTItMC4wMThsMC4wMTgtM2UtM2MtMy40MDEtNS4wMTQtNC40NzktOS4yOTUtMy4wNjMtMTQuMTY4aDEuMTU4bDEyLjQ0NC0wLjAxNCAwLjAyOS0yLjg1NWgtMTIuNTM5YzIuMzEtNS40MzYgNS41NDQtMTAuMzMgMTcuMDg4LTEwLjMzdi0yLjg2OWMtMTAuNjUxIDAtMTcuMDI2IDQuMjI5LTIwLjA3OSAxMy4xOTloLTIyLjk4MWMxLjYwNy03LjE3MSAxLjg4Ni0xNC4yMi0wLjQ4Ni0xOC4yOTUtMS4zMzUtMi4yOTYtMy40NDMtMy41MTMtNi4wOTItMy41MTMtOS40OTMgMC0xMy4yNDEgOS43MDEtMTMuMzk1IDEwLjExNGwyLjY4NiAxLjAwOGMwLjEzNC0wLjM1MSAzLjIyOS04LjI1MiAxMC43MDktOC4yNTJ6bTE1Ljk0NCA0NC42NDZsLTEyLjEyLTcuNjMxIDIzLjY4NiA2ZS0zIC0xMS41NjYgNy42MjV6bTEyLjU5NS0yMi44MzljLTEuMDE5IDMuMjQ4LTAuNjEgOC4xNDEgMS44OTggMTIuMzRoLTI5LjJjMS43NzYtMy41NTkgMy40MjMtNy44OTcgNC42MjctMTIuMzRoMjIuNjc1eiIvPgo8cGF0aCBkPSJtMTU3LjUxIDQ5LjAyOGgtMWUtM2wtMWUtMyAyZS0zIDJlLTMgLTJlLTMiLz4KPHBhdGggZD0ibTI1Mi4yIDE3MC42Yy00Ljg2My01LjQ0LTE0LjM4OS04LjAxNS0yMi4zNDQtNy44MjQtNS4wNzEtNi4wMzYtMzEuOTc3LTM0LjQ0MS0zNy40MDktNDAuMTY5IDExLjIzMS03Ljg4MiAyMC45ODUtMTguMTIyIDI4LjQ2My0zMC4yODRoMTQuODQ3di0zLjE4N2gtMTIuOTY4YzAuODI4LTEuNDYxIDEuNjE3LTIuOTUzIDIuMzgtNC40NjVoMTAuNTg4di0zLjE4OGgtOS4wNDZjNi43Mi0xNC41MTMgMTAuNDM5LTMxLjE3NSAxMC4wNzgtNDkuNDExIDAuMDEzIDhlLTMgMC4wMjYgMC4wMTQgMC4wMzggMC4wMjEtMC4wMTktNC45ODktMS41NzItMjYuMDc2LTQuNDI4LTMxLjg4Mi03Ljc0NCAyLjk0My0yMS44MzUgMTIuNDc3LTI1LjAyNCAyMi4yMjctMTUuMjg0LTIuMjgyLTMyLjUxNC0yLjAxMi00Ny42MDcgMC42LTIuNTIyLTEwLjQ5LTE1LjE3OC0xOC41MTgtMjQuNzI2LTIzLjA0LTQuMDI3IDYuNzk2LTUuODExIDIyLjU1My01LjM1OCAzMy43MzEtMC4wMTcgMC4wMTEtMC4wMzUgMC4wMjMtMC4wNTMgMC4wMzUgMC4zODEgMTAuMDk5IDEuNzUyIDE5LjM3MyAzLjk1OSAyNy44OTQtMzMuMDIgOC4xODItNjguOTY5IDI5LjgxMy04OS4wNzggNTAuNzE4LTkuNDEyLTEyLjcwMy0xMy4xNDYtMjMuMTI4LTE0LjI1NS0zMS4wMjgtMS40MDEtOS45NzcgMC45ODEtMTkuMTMgNi44ODctMjYuNDY5IDkuMjQ3LTExLjQ4NyAyMi4zODUtMTIuMjk2IDM1Ljg5NC0xMC4wMjQtMC4yNjQgMi4xMzMgMC4wMTYgNC4xNzIgMC44NzEgNS40MzQgMy41NzIgNS4yNzYgMjIuNzczIDcuMTMgMzQuMjM0IDIuMDE3LTguNDU4LTExLjg1Mi0yNS41OS0xNy42MzktMzAuMzM3LTE1LjMyLTEuNTcyIDAuNzY3LTIuNzU5IDIuMTc4LTMuNTcyIDMuODIzLTQuNjY5LTAuODM1LTkuMzA2LTEuNDU3LTEyLjY5Ni0xLjQzMi0xMS45MTQgMC4wODgtMjEuMDIyIDQuMjUxLTI3Ljg0MyAxMi43MjYtNi42OTMgOC4zMTUtOS4zOTggMTguNjQxLTcuODIzIDI5Ljg2MSAxLjQ5MiAxMC42MjcgNi43NTMgMjEuOTMgMTUuNTcyIDMzLjY1Mi0xLjQ2NSAxLjU3MS0yLjg4MSAzLjEyMy00LjI0NCA0LjY0Ny0yMS40OTQgMjQuMDUtMzcuMjA1IDQ5Ljg0LTM3LjIwNSA1NC4xMTN2Mi4yMTRoMjguMzU1bC0wLjQ5Ny0yLjYyNWMtMS42MDEtOC40NjMgMS41OTctMTkuMDQxIDguMTQ3LTI2Ljk0NyA0LjExMi00Ljk2MyAxMC45MjItMTAuNjI4IDIxLjYxNi0xMy4yNDIgOS41MDkgOS4yOCAyMS42MjMgMTkuMTM2IDM1LjEwOCAyOC42NDRoMjEuMDcxdi0yLjIxNGMwLTIuNDk4LTEuMjM4LTQuNjg1LTMuNDg4LTYuMTU3LTMuMzI5LTIuMTc2LTguNDY3LTIuNDc2LTEzLjE4Ny0wLjg2Ni00LjUtNS4wMTItNy4wMjMtMTEuNzA3LTcuNTY4LTIwLjAyMiA0NS43MzEgNC4wNSA4OS40NzIgMjIuNTE3IDEzOC44MyA0OC4zaDI3LjE1NmwwLjM1Ni0xLjc4YzAuNTA3LTIuNTM0LTAuODc0LTUuOTI5LTMuNjkyLTkuMDgxem0tMTE1LjQxLTE2NC40NWMyLjI0NyAxMi4yNTYgNi4zMjIgMTkuOTQyIDE1LjE0OCAyMy43MTMgNy44MTQtMi4yMzYgMTYuODI5LTMuNjIgMjYuMDgxLTQuMTMxbDcuNjc0IDE2LjgzMSA0LjkyLTE2Ljk3N2M5LjM0OSAwLjMwMyAxOC41MSAxLjUxNCAyNi40OTYgMy43MTcgOC4xMjMtNS45MDYgMTEuMjczLTE0LjkyNyAxMi45OTMtMjIuODA5IDIuMTQ5IDkuMTcyIDEuOTAxIDI4Ljk4NCAxLjkwNyAyOC45ODggMC4xNTEgNy4zOTgtMC40NDQgMTQuNTA4LTEuNjk0IDIxLjI4NWwtOC43NjUgMy43MjUgNy43MjQgMS4xN2MtMC42MTQgMi41OTctMS4zMTcgNS4xNDQtMi4xMjMgNy42MzFsLTcuNDc0IDIuMTcgNS45NTUgMi4xNDRjLTEuMDE4IDIuNjk4LTIuMTM4IDUuMzI5LTMuMzcyIDcuODc4aC0xMi4zMjV2My4xODhoMTAuNzA0Yy0wLjgwOCAxLjUxOS0xLjY1OCAzLjAwNS0yLjU0IDQuNDY1aC04LjE2NHYzLjE4N2g2LjE1OWMtOC4xMDMgMTIuMjcxLTE4LjgzMyAyMi4yMjItMzEuMTEgMjkuMjM4LTE0LjE4OS03LjA3LTI0LjkyMy0xNy4zOS0zMi43ODctMjkuMjM4aDQuNzA1di0zLjE4N2gtNi43MzJjLTAuODkyLTEuNDY5LTEuNzQzLTIuOTU4LTIuNTUzLTQuNDY1aDkuMjg1di0zLjE4OGgtMTAuOTNjLTEuODgyLTMuODE0LTMuNTE1LTcuNzIxLTQuOTE3LTExLjY3NGw1LjU2OS0xLjU1OS03LjAyMi0yLjgwOGMtMC43MS0yLjI5MS0xLjM0Ny00LjU5MS0xLjkxMi02Ljg5MmwxMC44MDctMC43MzctMTIuMzU4LTYuNTU3Yy0zLjAyOS0xNi43MDEtMi40MjEtMzIuOTEgMC42NTEtNDUuMTA4em0tMTA0LjIgMTM4LjA0Yy02LjcwNyA4LjA5NS0xMC4yNjIgMTguNzg4LTkuNDQ4IDI3Ljk2OWgtMTcuODYyYzMuNTg5LTcuNzY3IDE3Ljg4NS0zMC4yMiAzOS4wMDktNTIuOSAyLjkxMSAzLjU5OCA2LjE1MyA3LjIzMiA5LjcxNCAxMC44OTYtMTAuMzcxIDMuMTE4LTE3LjE3MSA4LjkxNS0yMS40MTMgMTQuMDM1em0xOTYuODggMzIuODRjLTQ5LjgxNS0yNS45OTMtOTMuNTU3LTQ0LjMyMy0xNDAuMDItNDguMzI3IDAuMTAxLTYuNDY2IDEuMjUzLTEzLjc4NSAzLjQ2MS0yMS45NDJsLTQuMjczLTEuMTU4Yy0yLjI3MSA4LjM4NS0zLjQ2NyAxNS45NzctMy42MDIgMjIuNzYzLTQuODQyLTAuMzIxLTkuNzE1LTAuNDg3LTE0LjYzLTAuNDg3LTQuMTY5IDAtNy45NjYgMC4zODctMTEuNDI5IDEuMDYtNC41MTYtNC41MTQtOC4zNjQtOC44MTYtMTEuNjMzLTEyLjg5OSA1LjgxNS02LjA1OCAxMi42NTctMTEuOTU1IDIwLjE0NC0xNy40ODlsMTAuMzY4IDcuMTU5LTMuMzg1LTEyLjA5YzMuMTUyLTIuMTI2IDYuMzkyLTQuMTgxIDkuNjk1LTYuMTU1bDE1LjM2NSA3LjgwOC03LjIxNS0xMi40MzljMi4xMDMtMS4xMzYgNC4yMjMtMi4yMzYgNi4zNTQtMy4yOTZsMjEuNDY1IDE0LjM5OC03LjA0OS0yMC44ODhjNy4zMjctMi45NTMgMTQuNjM1LTUuMzY4IDIxLjcwMy03LjExNiAxLjY2MSA1LjUxMiAzLjY5MyAxMC42ODMgNi4wNCAxNS41NDhoLTkuNzQ5djMuMTg4aDExLjM1NmMwLjc5OSAxLjUxOSAxLjYyNSAzLjAxIDIuNDg4IDQuNDY1aC0xMy44NDR2My4xODdoMTUuODE4YzkuNzAxIDE1LjA1OCAyMi44MDkgMjYuNTg4IDM3LjY0NSAzNS4zMTUgMS42NTEtMC45NDMgMy4yNzEtMS45NDQgNC44NjktMi45ODJsMy44ODggNC4xODYtNi41MzQgMTAuMDUyIDExLjE0NS01LjA4OCA2LjQ1MiA2Ljk0Ni0xMC45MDcgOC4zMTEgMTUuMDE5LTMuODg0IDIwLjI1NyAyMS44MDggMS43MTUtMC4xNDdjMTAuNzM4LTAuOTE5IDE2Ljg0MSA0LjkwNCAxOC40NTcgNi43MTEgMS4xODUgMS4zMjUgMS45IDIuNTM0IDIuMjg5IDMuNDgyaC0yMS43MjJ6Ii8+Cjwvc3ZnPg==
+  install:
+    strategy: deployment
+    spec:
+      permissions:
+      - serviceAccountName: tomcat-operator
+        rules:
+        - apiGroups:
+          - apache.org
+          resources:
+          - "*"
+          verbs:
+          - "*"
+        - apiGroups:
+          - ""
+          resources:
+          - pods
+          - services
+          - endpoints
+          - persistentvolumeclaims
+          - events
+          - configmaps
+          - secrets
+          - namespaces
+          verbs:
+          - "*"
+        - apiGroups:
+          - apps
+          resources:
+          - deployments
+          - daemonsets
+          - replicasets
+          - statefulsets
+          verbs:
+          - "*"
+      deployments:
+      - name: tomcat-operator
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: tomcat-operator
+          template:
+            metadata:
+              labels:
+                app: tomcat-operator
+            spec:
+              containers:
+                - name: tomcat-operator-olm-owned
+                  image: quay.io/alecmerdler/tomcat-operator
+                  imagePullPolicy: Always
+                  env:
+                  - name: MY_POD_NAMESPACE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.namespace
+                  - name: WATCH_NAMESPACE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.namespace
+                  - name: MY_POD_NAME
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.name
+              restartPolicy: Always
+              terminationGracePeriodSeconds: 5
+              serviceAccountName: tomcat-operator
+              serviceAccount: tomcat-operator
+  customresourcedefinitions:
+    owned:
+      - description: Represents a Tomcat instance
+        displayName: Tomcat Server
+        kind: Tomcat
+        name: tomcats.apache.org
+        version: v1alpha1
+        resources:
+          - kind: Deployment
+            version: v1beta2
+          - kind: ReplicaSet
+            version: v1beta2
+          - kind: Pod
+            version: v1
+          - kind: Service
+            version: v1
+        specDescriptors:
+          - description: The desired number of member Pods for the deployment.
+            displayName: Size
+            path: replicaCount
+            x-descriptors:
+              - 'urn:alm:descriptor:com.tectonic.ui:podCount'
+        statusDescriptors:
+          - description: The current status of the application.
+            displayName: Status
+            path: phase
+            x-descriptors:
+              - 'urn:alm:descriptor:io.kubernetes.phase'
+          - description: Explanation for the current status of the application.
+            displayName: Status Details
+            path: reason
+            x-descriptors:
+              - 'urn:alm:descriptor:io.kubernetes.phase:reason'

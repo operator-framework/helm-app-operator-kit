@@ -39,6 +39,10 @@ func (o *OwnerRefEngine) Render(chart *chart.Chart, values chartutil.Values) (ma
 		if err != nil {
 			return nil, err
 		}
+		if withOwner == "" {
+			logrus.Infof("skipping empty template: %s", fileName)
+			continue
+		}
 		ownedRenderedFiles[fileName] = withOwner
 	}
 	return ownedRenderedFiles, nil
@@ -49,6 +53,11 @@ func (o *OwnerRefEngine) addOwnerRefs(fileContents string) (string, error) {
 	parsed := chartutil.FromYaml(fileContents)
 	if errors, ok := parsed["Error"]; ok {
 		return "", fmt.Errorf("error parsing rendered template to add ownerrefs: %v", errors)
+	}
+
+	// Empty input
+	if len(parsed) == 0 {
+		return "", nil
 	}
 
 	unst, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&parsed)

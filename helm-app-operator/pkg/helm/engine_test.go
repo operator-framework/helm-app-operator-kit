@@ -52,6 +52,8 @@ spec:
 	baseEngineOutput := map[string]string{
 		"template.yaml":  baseOut,
 		"template2.yaml": baseOut,
+		"empty.yaml":     "",
+		"comment.yaml":   "# This is empty",
 	}
 
 	engine := NewOwnerRefEngine(&mockEngine{out: baseEngineOutput}, ownerRefs)

@@ -27,6 +27,7 @@ cd helm-app-operator-kit
 
 ```sh
 $ git checkout git@github.com:operator-framework/helm-app-operator-kit.git && cd helm-app-operator-kit
+$ cd helm-app-operator && dep ensure && cd ..
 $ docker build -t quay.io/<namespace>/<chart>-operator --build-arg HELM_CHART=/path/to/helm/chart --build-arg API_VERSION=<group/version> --build-arg KIND=<Kind> .
 $ docker push quay.io/<namespace>/<chart>-operator
 ```

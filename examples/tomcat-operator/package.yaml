@@ -1,0 +1,4 @@
+packageName: tomcat
+channels:
+- name: alpha
+  currentCSV: tomcat-operator.v0.0.1

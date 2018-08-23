@@ -15,10 +15,7 @@ ENV API_VERSION $API_VERSION
 ENV KIND $KIND
 WORKDIR /
 COPY --from=builder /go/src/github.com/operator-framework/helm-app-operator-kit/helm-app-operator/bin/operator /operator
-ADD $HELM_CHART /chart.tgz 
-RUN mkdir /chart \
-  && tar -xzf /chart.tgz --strip-components=1 -C /chart \
-  && rm /chart.tgz
+ADD $HELM_CHART /chart
 ENV HELM_CHART /chart
 
 CMD ["/operator"]

@@ -2,6 +2,8 @@ This project is a component of the [Operator Framework](https://github.com/opera
 
 # Helm App Operator Kit
 
+[![Docker Repository on Quay](https://quay.io/repository/operatorframework/helm-app-operator-ci/status "Docker Repository on Quay")](https://quay.io/repository/operatorframework/helm-app-operator-ci)
+
 This repository serves as a template for easily creating managed stateless applications that run either Kubernetes Deployments or Helm charts. It was inspired by the [Lostromos project](https://github.com/wpengine/lostromos). The underlying Operator was created using the `operator-sdk new` command.
 
 ## Installing a custom Helm-based app

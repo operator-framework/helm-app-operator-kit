@@ -92,7 +92,7 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 
 		err := processRequirements(updateReq.Chart,updateReq.Values)
 		if err != nil {
-			return nil, err
+			return r, err
 		}
 
 		releaseResponse, err := tiller.UpdateRelease(context.TODO(), updateReq)

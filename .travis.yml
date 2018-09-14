@@ -1,0 +1,6 @@
+sudo: required
+language: bash
+services:
+  - docker
+script:
+  - docker build -t quay.io/operatorframework/helm-app-operator-ci:$(git rev-parse --short HEAD) .

@@ -72,6 +72,12 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 			Chart:     chart,
 			Values:    &cpb.Config{Raw: string(cr)},
 		}
+
+		err := processRequirements(installReq.Chart,installReq.Values)
+		if err != nil {
+			return nil, err
+		}
+
 		releaseResponse, err := tiller.InstallRelease(context.TODO(), installReq)
 		if err != nil {
 			return r, err
@@ -83,6 +89,12 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 			Chart:  chart,
 			Values: &cpb.Config{Raw: string(cr)},
 		}
+
+		err := processRequirements(updateReq.Chart,updateReq.Values)
+		if err != nil {
+			return r, err
+		}
+
 		releaseResponse, err := tiller.UpdateRelease(context.TODO(), updateReq)
 		if err != nil {
 			return r, err
@@ -153,4 +165,19 @@ func releaseName(r *v1alpha1.HelmApp) string {
 
 func valuesFromResource(r *v1alpha1.HelmApp) ([]byte, error) {
 	return yaml.Marshal(r.Spec)
+}
+
+// processRequirements will process the requirements file
+// It will disable/enable the charts based on condition in requirements file
+// Also imports the specified chart values from child to parent.
+func processRequirements(chart *cpb.Chart, values *cpb.Config) error {
+	err := chartutil.ProcessRequirementsEnabled(chart, values)
+	if err != nil {
+		return err
+	}
+	err = chartutil.ProcessRequirementsImportValues(chart)
+	if err != nil {
+		return err
+	}
+	return nil
 }

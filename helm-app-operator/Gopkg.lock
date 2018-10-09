@@ -1231,6 +1231,7 @@
   analyzer-name = "dep"
   analyzer-version = 1
   input-imports = [
+    "github.com/operator-framework/operator-sdk/pkg/k8sclient",
     "github.com/operator-framework/operator-sdk/pkg/sdk",
     "github.com/operator-framework/operator-sdk/pkg/util/k8sutil",
     "github.com/operator-framework/operator-sdk/version",
@@ -1245,7 +1246,6 @@
     "k8s.io/apimachinery/pkg/runtime/schema",
     "k8s.io/client-go/discovery",
     "k8s.io/client-go/discovery/cached",
-    "k8s.io/client-go/kubernetes",
     "k8s.io/client-go/rest",
     "k8s.io/client-go/restmapper",
     "k8s.io/client-go/tools/clientcmd",

@@ -8,7 +8,6 @@ import (
 
 	yaml "gopkg.in/yaml.v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/rest"
 	"k8s.io/helm/pkg/chartutil"
 	"k8s.io/helm/pkg/engine"
 	"k8s.io/helm/pkg/kube"
@@ -73,7 +72,7 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 			Values:    &cpb.Config{Raw: string(cr)},
 		}
 
-		err := processRequirements(installReq.Chart,installReq.Values)
+		err := processRequirements(installReq.Chart, installReq.Values)
 		if err != nil {
 			return nil, err
 		}
@@ -90,7 +89,7 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 			Values: &cpb.Config{Raw: string(cr)},
 		}
 
-		err := processRequirements(updateReq.Chart,updateReq.Values)
+		err := processRequirements(updateReq.Chart, updateReq.Values)
 		if err != nil {
 			return r, err
 		}
@@ -153,7 +152,7 @@ func tillerRendererForCR(r *v1alpha1.HelmApp, storageBackend *storage.Storage, t
 		KubeClient: tillerKubeClient,
 	}
 	// Can't use `k8sclient.GetKubeClient()` because it implements the wrong interface
-	kubeconfig, _ := rest.InClusterConfig()
+	kubeconfig, _ := tillerKubeClient.ToRESTConfig()
 	internalClientSet, _ := internalclientset.NewForConfig(kubeconfig)
 
 	return tiller.NewReleaseServer(env, internalClientSet, false)

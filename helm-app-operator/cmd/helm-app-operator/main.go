@@ -4,12 +4,12 @@ import (
 	"context"
 	"os"
 	"runtime"
+	"time"
 
 	sdk "github.com/operator-framework/operator-sdk/pkg/sdk"
 	k8sutil "github.com/operator-framework/operator-sdk/pkg/util/k8sutil"
 	sdkVersion "github.com/operator-framework/operator-sdk/version"
 	"github.com/sirupsen/logrus"
-	"k8s.io/helm/pkg/kube"
 	"k8s.io/helm/pkg/storage"
 	"k8s.io/helm/pkg/storage/driver"
 
@@ -38,10 +38,11 @@ func main() {
 	if err != nil {
 		logrus.Fatalf("Failed to get watch namespace: %v", err)
 	}
-	resyncPeriod := 5
+	resyncPeriod := 5 * time.Second
 
 	storageBackend := storage.Init(driver.NewMemory())
-	tillerKubeClient := kube.New(nil)
+	tillerKubeClient := helm.NewTillerClient()
+
 	chartDir := os.Getenv(HelmChartEnvVar)
 
 	controller := helm.NewInstaller(storageBackend, tillerKubeClient, chartDir)

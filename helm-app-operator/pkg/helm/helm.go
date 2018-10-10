@@ -52,12 +52,12 @@ type Installer interface {
 type installer struct {
 	storageBackend   *storage.Storage
 	tillerKubeClient *kube.Client
-	chartDir         string
+	chart            *cpb.Chart
 }
 
 // NewInstaller returns a new Helm installer capable of installing and uninstalling releases.
-func NewInstaller(storageBackend *storage.Storage, tillerKubeClient *kube.Client, chartDir string) Installer {
-	return installer{storageBackend, tillerKubeClient, chartDir}
+func NewInstaller(storageBackend *storage.Storage, tillerKubeClient *kube.Client, chart *cpb.Chart) Installer {
+	return installer{storageBackend, tillerKubeClient, chart}
 }
 
 // NewInstallerFromEnv returns a GVK and installer based on configuration provided
@@ -73,7 +73,30 @@ func NewInstallerFromEnv(storageBackend *storage.Storage, tillerKubeClient *kube
 		return gvk, nil, err
 	}
 	gvk = gv.WithKind(kind)
-	installer := NewInstaller(storageBackend, tillerKubeClient, chartDir)
+
+	// Verify the GVK. In general, GVKs without groups are valid. However,
+	// a GVK without a group will most likely fail with a more descriptive
+	// error later in the initialization process.
+	if gvk.Version == "" {
+		return gvk, nil, fmt.Errorf("invalid %s: version must not be empty", APIVersionEnvVar)
+	}
+	if gvk.Kind == "" {
+		return gvk, nil, fmt.Errorf("invalid %s: kind must not be empty", KindEnvVar)
+	}
+
+	// Verify that the Helm chart directory is valid.
+	if chartDir == "" {
+		return gvk, nil, fmt.Errorf("invalid %s: must not be empty", HelmChartEnvVar)
+	}
+	if stat, err := os.Stat(chartDir); err != nil || !stat.IsDir() {
+		return gvk, nil, fmt.Errorf("invalid %s: %s is not a directory", HelmChartEnvVar, chartDir)
+	}
+	chart, err := chartutil.LoadDir(chartDir)
+	if err != nil {
+		return gvk, nil, fmt.Errorf("invalid %s: failed loading chart from %s: %s", HelmChartEnvVar, chartDir, err)
+	}
+
+	installer := NewInstaller(storageBackend, tillerKubeClient, chart)
 	return gvk, installer, nil
 }
 
@@ -82,11 +105,6 @@ func NewInstallerFromEnv(storageBackend *storage.Storage, tillerKubeClient *kube
 func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error) {
 	cr, err := valuesFromResource(r)
 	logrus.Infof("using values: %s", string(cr))
-	if err != nil {
-		return r, err
-	}
-
-	chart, err := chartutil.LoadDir(c.chartDir)
 	if err != nil {
 		return r, err
 	}
@@ -101,7 +119,7 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 		installReq := &services.InstallReleaseRequest{
 			Namespace: r.GetNamespace(),
 			Name:      releaseName(r),
-			Chart:     chart,
+			Chart:     c.chart,
 			Values:    &cpb.Config{Raw: string(cr)},
 		}
 
@@ -118,7 +136,7 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 	} else {
 		updateReq := &services.UpdateReleaseRequest{
 			Name:   releaseName(r),
-			Chart:  chart,
+			Chart:  c.chart,
 			Values: &cpb.Config{Raw: string(cr)},
 		}
 

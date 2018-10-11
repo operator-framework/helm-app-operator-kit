@@ -7,13 +7,13 @@ import (
 
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	crthandler "sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	appv1alpha1 "github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/apis/app/v1alpha1"
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm"
 )
 
@@ -39,8 +39,7 @@ func Add(mgr manager.Manager, options WatchOptions) {
 	}
 
 	// Register the GVK with the schema
-	mgr.GetScheme().AddKnownTypeWithName(options.GVK, &appv1alpha1.HelmApp{})
-	mgr.GetScheme().AddKnownTypeWithName(options.GVK.GroupVersion().WithKind(options.GVK.Kind+"List"), &appv1alpha1.HelmAppList{})
+	mgr.GetScheme().AddKnownTypeWithName(options.GVK, &unstructured.Unstructured{})
 	metav1.AddToGroupVersion(mgr.GetScheme(), options.GVK.GroupVersion())
 
 	controllerName := fmt.Sprintf("%v-controller", strings.ToLower(options.GVK.Kind))
@@ -49,7 +48,8 @@ func Add(mgr manager.Manager, options WatchOptions) {
 		logrus.Fatal(err)
 	}
 
-	o := &appv1alpha1.HelmApp{}
+	o := &unstructured.Unstructured{}
+	o.SetGroupVersionKind(options.GVK)
 	if err := c.Watch(&source.Kind{Type: o}, &crthandler.EnqueueRequestForObject{}); err != nil {
 		logrus.Fatal(err)
 	}

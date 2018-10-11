@@ -9,6 +9,7 @@ import (
 
 	yaml "gopkg.in/yaml.v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/helm/pkg/chartutil"
 	"k8s.io/helm/pkg/engine"
@@ -45,8 +46,8 @@ const (
 // Installer can install and uninstall Helm releases given a custom resource
 // which provides runtime values for the Chart.
 type Installer interface {
-	InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error)
-	UninstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error)
+	InstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	UninstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error)
 }
 
 type installer struct {
@@ -102,7 +103,7 @@ func NewInstallerFromEnv(storageBackend *storage.Storage, tillerKubeClient *kube
 
 // InstallRelease accepts a custom resource, installs a Helm release using Tiller,
 // and returns the custom resource with updated `status`.
-func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error) {
+func (c installer) InstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	cr, err := valuesFromResource(r)
 	logrus.Infof("using values: %s", string(cr))
 	if err != nil {
@@ -113,7 +114,9 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 	latestRelease, err := c.storageBackend.Last(releaseName(r))
 
 	tiller := tillerRendererForCR(r, c.storageBackend, c.tillerKubeClient)
-	c.syncReleaseStatus(r.Status)
+
+	status := v1alpha1.StatusFor(r)
+	c.syncReleaseStatus(*status)
 
 	if err != nil || latestRelease == nil {
 		installReq := &services.InstallReleaseRequest{
@@ -152,16 +155,18 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 		updatedRelease = releaseResponse.GetRelease()
 	}
 
-	r.Status = *r.Status.SetRelease(updatedRelease)
-	// TODO(alecmerdler): Call `r.Status.SetPhase()` with `NOTES.txt` of rendered Chart
-	r.Status = *r.Status.SetPhase(v1alpha1.PhaseApplied, v1alpha1.ReasonApplySuccessful, "")
+	status = v1alpha1.StatusFor(r)
+	status.SetRelease(updatedRelease)
+	// TODO(alecmerdler): Call `status.SetPhase()` with `NOTES.txt` of rendered Chart
+	status.SetPhase(v1alpha1.PhaseApplied, v1alpha1.ReasonApplySuccessful, "")
+	r.Object["status"] = status
 
 	return r, nil
 }
 
 // UninstallRelease accepts a custom resource, uninstalls the existing Helm release
 // using Tiller, and returns the custom resource with updated `status`.
-func (c installer) UninstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error) {
+func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	// Get history of this release
 	h, err := c.storageBackend.History(releaseName(r))
 	if err != nil {
@@ -199,7 +204,7 @@ func (c installer) syncReleaseStatus(status v1alpha1.HelmAppStatus) {
 
 // tillerRendererForCR creates a ReleaseServer configured with a rendering engine that adds ownerrefs to rendered assets
 // based on the CR.
-func tillerRendererForCR(r *v1alpha1.HelmApp, storageBackend *storage.Storage, tillerKubeClient *kube.Client) *tiller.ReleaseServer {
+func tillerRendererForCR(r *unstructured.Unstructured, storageBackend *storage.Storage, tillerKubeClient *kube.Client) *tiller.ReleaseServer {
 	controllerRef := metav1.NewControllerRef(r, r.GroupVersionKind())
 	ownerRefs := []metav1.OwnerReference{
 		*controllerRef,
@@ -221,12 +226,12 @@ func tillerRendererForCR(r *v1alpha1.HelmApp, storageBackend *storage.Storage, t
 	return tiller.NewReleaseServer(env, internalClientSet, false)
 }
 
-func releaseName(r *v1alpha1.HelmApp) string {
+func releaseName(r *unstructured.Unstructured) string {
 	return fmt.Sprintf("%s-%s", operatorName, r.GetName())
 }
 
-func valuesFromResource(r *v1alpha1.HelmApp) ([]byte, error) {
-	return yaml.Marshal(r.Spec)
+func valuesFromResource(r *unstructured.Unstructured) ([]byte, error) {
+	return yaml.Marshal(r.Object["spec"])
 }
 
 // processRequirements will process the requirements file

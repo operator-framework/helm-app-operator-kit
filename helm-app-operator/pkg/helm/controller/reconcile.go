@@ -8,11 +8,11 @@ import (
 	"github.com/sirupsen/logrus"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	appv1alpha1 "github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/apis/app/v1alpha1"
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm"
 )
 
@@ -28,11 +28,11 @@ var lastResourceVersion string
 func (r helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	logrus.Infof("processing %s", request.NamespacedName)
 
-	o := &appv1alpha1.HelmApp{}
-	err := r.Client.Get(context.TODO(), request.NamespacedName, o)
+	o := &unstructured.Unstructured{}
 	o.SetGroupVersionKind(r.GVK)
-	o.SetNamespace(request.Namespace)
+	err := r.Client.Get(context.TODO(), request.NamespacedName, o)
 	o.SetName(request.Name)
+	o.SetNamespace(request.Namespace)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			_, err = r.Installer.UninstallRelease(o)

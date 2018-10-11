@@ -42,7 +42,7 @@ func (r helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 
 	if o.GetResourceVersion() == lastResourceVersion {
 		logrus.Infof("skipping %s because resource version has not changed", request.NamespacedName)
-		return reconcile.Result{}, nil
+		return reconcile.Result{RequeueAfter: r.ResyncPeriod}, nil
 	}
 
 	updatedResource, err := r.Installer.InstallRelease(o)

@@ -162,8 +162,20 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 // UninstallRelease accepts a custom resource, uninstalls the existing Helm release
 // using Tiller, and returns the custom resource with updated `status`.
 func (c installer) UninstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error) {
+	// Get history of this release
+	h, err := c.storageBackend.History(releaseName(r))
+	if err != nil {
+		return r, err
+	}
+
+	// If there is no history, the release has already been uninstalled,
+	// so there's nothing to do.
+	if len(h) == 0 {
+		return r, nil
+	}
+
 	tiller := tillerRendererForCR(r, c.storageBackend, c.tillerKubeClient)
-	_, err := tiller.UninstallRelease(context.TODO(), &services.UninstallReleaseRequest{
+	_, err = tiller.UninstallRelease(context.TODO(), &services.UninstallReleaseRequest{
 		Name:  releaseName(r),
 		Purge: true,
 	})

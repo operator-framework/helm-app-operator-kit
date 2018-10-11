@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	crthandler "sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -32,10 +33,11 @@ func Add(mgr manager.Manager, options WatchOptions) {
 		options.ResyncPeriod = time.Minute
 	}
 	r := &helmOperatorReconciler{
-		Client:       mgr.GetClient(),
-		GVK:          options.GVK,
-		Installer:    options.Installer,
-		ResyncPeriod: options.ResyncPeriod,
+		Client:               mgr.GetClient(),
+		GVK:                  options.GVK,
+		Installer:            options.Installer,
+		ResyncPeriod:         options.ResyncPeriod,
+		lastResourceVersions: map[types.NamespacedName]string{},
 	}
 
 	// Register the GVK with the schema

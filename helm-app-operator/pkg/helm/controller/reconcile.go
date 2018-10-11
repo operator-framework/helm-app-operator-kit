@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -10,6 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -21,11 +23,12 @@ type helmOperatorReconciler struct {
 	GVK          schema.GroupVersionKind
 	Installer    helm.Installer
 	ResyncPeriod time.Duration
+
+	lastResourceVersions map[types.NamespacedName]string
+	mutex                sync.RWMutex
 }
 
-var lastResourceVersion string
-
-func (r helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.Result, error) {
+func (r *helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	logrus.Infof("processing %s", request.NamespacedName)
 
 	o := &unstructured.Unstructured{}
@@ -40,7 +43,8 @@ func (r helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 		return reconcile.Result{}, err
 	}
 
-	if o.GetResourceVersion() == lastResourceVersion {
+	lastResourceVersion, ok := r.getLastResourceVersion(request.NamespacedName)
+	if ok && o.GetResourceVersion() == lastResourceVersion {
 		logrus.Infof("skipping %s because resource version has not changed", request.NamespacedName)
 		return reconcile.Result{RequeueAfter: r.ResyncPeriod}, nil
 	}
@@ -56,7 +60,20 @@ func (r helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 		logrus.Errorf(err.Error())
 		return reconcile.Result{}, fmt.Errorf("failed to update custom resource status: %v", err)
 	}
-	lastResourceVersion = o.GetResourceVersion()
+	r.setLastResourceVersion(request.NamespacedName, o.GetResourceVersion())
 
 	return reconcile.Result{RequeueAfter: r.ResyncPeriod}, nil
+}
+
+func (r *helmOperatorReconciler) getLastResourceVersion(n types.NamespacedName) (string, bool) {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	v, ok := r.lastResourceVersions[n]
+	return v, ok
+}
+
+func (r *helmOperatorReconciler) setLastResourceVersion(n types.NamespacedName, v string) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.lastResourceVersions[n] = v
 }

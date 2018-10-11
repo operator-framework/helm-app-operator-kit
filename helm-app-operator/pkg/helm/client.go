@@ -1,25 +1,23 @@
 package helm
 
 import (
-	"time"
-
-	"github.com/operator-framework/operator-sdk/pkg/k8sclient"
-
-	"k8s.io/client-go/restmapper"
-
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/helm/pkg/kube"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
 // NewTillerClientFromManager returns a Kubernetes client that can be used with
 // a Tiller server.
-func NewTillerClient() *kube.Client {
-	return kube.New(newClientGetter())
-
+func NewTillerClientFromManager(mgr manager.Manager) (*kube.Client, error) {
+	c, err := newClientGetter(mgr)
+	if err != nil {
+		return nil, err
+	}
+	return kube.New(c), nil
 }
 
 type clientGetter struct {
@@ -44,23 +42,18 @@ func (c *clientGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig {
 	return nil
 }
 
-func newClientGetter() *clientGetter {
-	client := k8sclient.GetKubeClient()
-	cfg := k8sclient.GetKubeConfig()
-	dc := cached.NewMemCacheClient(client.Discovery())
-	rm := restmapper.NewDeferredDiscoveryRESTMapper(dc)
-
-	rm.Reset()
-	ticker := time.NewTicker(time.Minute)
-	go func() {
-		for range ticker.C {
-			rm.Reset()
-		}
-	}()
+func newClientGetter(mgr manager.Manager) (*clientGetter, error) {
+	cfg := mgr.GetConfig()
+	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cdc := cached.NewMemCacheClient(dc)
+	rm := mgr.GetRESTMapper()
 
 	return &clientGetter{
 		restConfig:      cfg,
-		discoveryClient: dc,
+		discoveryClient: cdc,
 		restMapper:      rm,
-	}
+	}, nil
 }

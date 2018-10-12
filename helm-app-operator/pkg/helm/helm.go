@@ -68,7 +68,7 @@ type Installer interface {
 type installer struct {
 	storageBackend   *storage.Storage
 	tillerKubeClient *kube.Client
-	chart            *cpb.Chart
+	chartDir         string
 }
 
 type watch struct {
@@ -79,8 +79,8 @@ type watch struct {
 }
 
 // NewInstaller returns a new Helm installer capable of installing and uninstalling releases.
-func NewInstaller(storageBackend *storage.Storage, tillerKubeClient *kube.Client, chart *cpb.Chart) Installer {
-	return installer{storageBackend, tillerKubeClient, chart}
+func NewInstaller(storageBackend *storage.Storage, tillerKubeClient *kube.Client, chartDir string) Installer {
+	return installer{storageBackend, tillerKubeClient, chartDir}
 }
 
 // newInstallerFromEnv returns a GVK and installer based on configuration provided
@@ -101,12 +101,11 @@ func newInstallerFromEnv(storageBackend *storage.Storage, tillerKubeClient *kube
 		return gvk, nil, fmt.Errorf("invalid GVK: %s: %s", gvk, err)
 	}
 
-	chart, err := loadChart(chartDir)
-	if err != nil {
-		return gvk, nil, fmt.Errorf("invalid chart directory: failed to load chart from %s: %s", chartDir, err)
+	if _, err := chartutil.IsChartDir(chartDir); err != nil {
+		return gvk, nil, fmt.Errorf("invalid chart directory %s: %s", chartDir, err)
 	}
 
-	installer := NewInstaller(storageBackend, tillerKubeClient, chart)
+	installer := NewInstaller(storageBackend, tillerKubeClient, chartDir)
 	return gvk, installer, nil
 }
 
@@ -148,15 +147,14 @@ func NewInstallersFromFile(storageBackend *storage.Storage, tillerKubeClient *ku
 			return nil, fmt.Errorf("invalid GVK: %s: %s", gvk, err)
 		}
 
-		chart, err := loadChart(w.Chart)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load chart from %s: %s", w.Chart, err)
+		if _, err := chartutil.IsChartDir(w.Chart); err != nil {
+			return nil, fmt.Errorf("invalid chart directory %s: %s", w.Chart, err)
 		}
 
 		if _, ok := m[gvk]; ok {
 			return nil, fmt.Errorf("duplicate GVK: %s", gvk)
 		}
-		m[gvk] = NewInstaller(storageBackend, tillerKubeClient, chart)
+		m[gvk] = NewInstaller(storageBackend, tillerKubeClient, w.Chart)
 	}
 	return m, nil
 }
@@ -172,16 +170,6 @@ func verifyGVK(gvk schema.GroupVersionKind) error {
 		return errors.New("kind must not be empty")
 	}
 	return nil
-}
-
-func loadChart(path string) (*cpb.Chart, error) {
-	if path == "" {
-		return nil, errors.New("path must not be empty")
-	}
-	if stat, err := os.Stat(path); err != nil || !stat.IsDir() {
-		return nil, errors.New("path is not a directory")
-	}
-	return chartutil.LoadDir(path)
 }
 
 func getWatchesFile() (string, bool) {
@@ -206,6 +194,13 @@ func getWatchesFile() (string, bool) {
 func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, bool, error) {
 	needsUpdate := false
 
+	// chart is mutated by the call to processRequirements,
+	// so we need to reload it from disk every time.
+	chart, err := chartutil.LoadDir(c.chartDir)
+	if err != nil {
+		return r, needsUpdate, err
+	}
+
 	cr, err := valuesFromResource(r)
 	logrus.Infof("using values: %s", string(cr))
 	if err != nil {
@@ -213,7 +208,7 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 	}
 	config := &cpb.Config{Raw: string(cr)}
 
-	err = processRequirements(c.chart, config)
+	err = processRequirements(chart, config)
 	if err != nil {
 		return r, needsUpdate, err
 	}
@@ -226,14 +221,14 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 	var updatedRelease *release.Release
 	latestRelease, err := c.storageBackend.Deployed(releaseName(r))
 	if err != nil || latestRelease == nil {
-		updatedRelease, err = c.installRelease(r, tiller, c.chart, config)
+		updatedRelease, err = c.installRelease(r, tiller, chart, config)
 		if err != nil {
 			return r, needsUpdate, err
 		}
 		needsUpdate = true
 		logrus.Infof("Installed release for %s release=%s", ResourceString(r), updatedRelease.GetName())
 	} else {
-		candidateRelease, err := c.getCandidateRelease(r, tiller, c.chart, config)
+		candidateRelease, err := c.getCandidateRelease(r, tiller, chart, config)
 		if err != nil {
 			return r, needsUpdate, err
 		}
@@ -247,7 +242,7 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 			updatedRelease = latestRelease
 			logrus.Infof("Reconciled release for %s release=%s", ResourceString(r), updatedRelease.GetName())
 		} else {
-			updatedRelease, err = c.updateRelease(r, tiller, c.chart, config)
+			updatedRelease, err = c.updateRelease(r, tiller, chart, config)
 			if err != nil {
 				return r, needsUpdate, err
 			}

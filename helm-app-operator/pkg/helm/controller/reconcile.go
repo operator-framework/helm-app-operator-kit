@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -28,22 +27,25 @@ const (
 )
 
 func (r *helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.Result, error) {
-	logrus.Infof("processing %s", request.NamespacedName)
-
 	o := &unstructured.Unstructured{}
 	o.SetGroupVersionKind(r.GVK)
+	o.SetNamespace(request.Namespace)
+	o.SetName(request.Name)
+	logrus.Debugf("Processing %s", helm.ResourceString(o))
+
 	err := r.Client.Get(context.TODO(), request.NamespacedName, o)
 	if apierrors.IsNotFound(err) {
 		return reconcile.Result{}, nil
 	}
 	if err != nil {
+		logrus.Errorf("Failed to lookup %s: %s", helm.ResourceString(o), err)
 		return reconcile.Result{}, err
 	}
 
 	deleted := o.GetDeletionTimestamp() != nil
 	pendingFinalizers := o.GetFinalizers()
 	if !deleted && !contains(pendingFinalizers, finalizer) {
-		logrus.Debugf("adding finalizer %s to resource", finalizer)
+		logrus.Debugf("Adding finalizer \"%s\" to %s", finalizer, helm.ResourceString(o))
 		finalizers := append(pendingFinalizers, finalizer)
 		o.SetFinalizers(finalizers)
 		err := r.Client.Update(context.TODO(), o)
@@ -51,7 +53,7 @@ func (r *helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile
 	}
 	if deleted {
 		if !contains(pendingFinalizers, finalizer) {
-			logrus.Info("resouce is terminated, skipping reconciliation")
+			logrus.Infof("Resource %s is terminated, skipping reconciliation", helm.ResourceString(o))
 			return reconcile.Result{}, nil
 		}
 
@@ -73,15 +75,15 @@ func (r *helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile
 
 	updatedResource, needsUpdate, err := r.Installer.ReconcileRelease(o)
 	if err != nil {
-		logrus.Errorf(err.Error())
+		logrus.Errorf("Failed to reconcile release for %s: %s", helm.ResourceString(o), err)
 		return reconcile.Result{}, err
 	}
 
 	if needsUpdate {
 		err = r.Client.Update(context.TODO(), updatedResource)
 		if err != nil {
-			logrus.Errorf(err.Error())
-			return reconcile.Result{}, fmt.Errorf("failed to update custom resource status: %v", err)
+			logrus.Errorf("Failed to update resource status for %s: %s", helm.ResourceString(o), err)
+			return reconcile.Result{}, err
 		}
 	}
 

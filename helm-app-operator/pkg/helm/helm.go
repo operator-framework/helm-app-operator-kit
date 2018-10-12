@@ -198,19 +198,19 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 	// so we need to reload it from disk every time.
 	chart, err := chartutil.LoadDir(c.chartDir)
 	if err != nil {
-		return r, needsUpdate, err
+		return r, needsUpdate, fmt.Errorf("failed to load chart: %s", err)
 	}
 
 	cr, err := valuesFromResource(r)
-	logrus.Infof("using values: %s", string(cr))
 	if err != nil {
-		return r, needsUpdate, err
+		return r, needsUpdate, fmt.Errorf("failed to parse values: %s", err)
 	}
 	config := &cpb.Config{Raw: string(cr)}
+	logrus.Debugf("Using values: %s", config.GetRaw())
 
 	err = processRequirements(chart, config)
 	if err != nil {
-		return r, needsUpdate, err
+		return r, needsUpdate, fmt.Errorf("failed to process chart requirements: %s", err)
 	}
 
 	tiller := tillerRendererForCR(r, c.storageBackend, c.tillerKubeClient)
@@ -223,28 +223,28 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 	if err != nil || latestRelease == nil {
 		updatedRelease, err = c.installRelease(r, tiller, chart, config)
 		if err != nil {
-			return r, needsUpdate, err
+			return r, needsUpdate, fmt.Errorf("install error: %s", err)
 		}
 		needsUpdate = true
 		logrus.Infof("Installed release for %s release=%s", ResourceString(r), updatedRelease.GetName())
 	} else {
 		candidateRelease, err := c.getCandidateRelease(r, tiller, chart, config)
 		if err != nil {
-			return r, needsUpdate, err
+			return r, needsUpdate, fmt.Errorf("failed to generate candidate release: %s", err)
 		}
 
 		latestManifest := latestRelease.GetManifest()
 		if latestManifest == candidateRelease.GetManifest() {
 			err = c.reconcileRelease(r, latestManifest)
 			if err != nil {
-				return r, needsUpdate, err
+				return r, needsUpdate, fmt.Errorf("reconcile error: %s", err)
 			}
 			updatedRelease = latestRelease
 			logrus.Infof("Reconciled release for %s release=%s", ResourceString(r), updatedRelease.GetName())
 		} else {
 			updatedRelease, err = c.updateRelease(r, tiller, chart, config)
 			if err != nil {
-				return r, needsUpdate, err
+				return r, needsUpdate, fmt.Errorf("update error: %s", err)
 			}
 			needsUpdate = true
 			logrus.Infof("Updated release for %s release=%s", ResourceString(r), updatedRelease.GetName())
@@ -266,7 +266,7 @@ func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured
 	// Get history of this release
 	h, err := c.storageBackend.History(releaseName(r))
 	if err != nil {
-		return r, err
+		return r, fmt.Errorf("failed to get release history: %s", err)
 	}
 
 	// If there is no history, the release has already been uninstalled,
@@ -333,17 +333,17 @@ func (c installer) reconcileRelease(r *unstructured.Unstructured, expectedManife
 		helper := resource.NewHelper(expected.Client, expected.Mapping)
 		_, err = helper.Create(expected.Namespace, true, expected.Object)
 		if err == nil || !apierrors.IsAlreadyExists(err) {
-			return err
+			return fmt.Errorf("create error: %s", err)
 		}
 
 		patch, err := json.Marshal(expected.Object)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to marshal JSON patch: %s", err)
 		}
 
 		_, err = helper.Patch(expected.Namespace, expected.Name, types.MergePatchType, patch)
 		if err != nil {
-			return err
+			return fmt.Errorf("patch error: %s", err)
 		}
 		return nil
 	})

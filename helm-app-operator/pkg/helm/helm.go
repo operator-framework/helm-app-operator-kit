@@ -1,7 +1,9 @@
 package helm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -10,9 +12,11 @@ import (
 	"github.com/sirupsen/logrus"
 
 	yaml "gopkg.in/yaml.v2"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/helm/pkg/chartutil"
 	"k8s.io/helm/pkg/engine"
 	"k8s.io/helm/pkg/kube"
@@ -23,6 +27,7 @@ import (
 	"k8s.io/helm/pkg/tiller"
 	"k8s.io/helm/pkg/tiller/environment"
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
+	"k8s.io/kubernetes/pkg/kubectl/genericclioptions/resource"
 
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/apis/app/v1alpha1"
 )
@@ -56,7 +61,7 @@ const (
 // Installer can install and uninstall Helm releases given a custom resource
 // which provides runtime values for the Chart.
 type Installer interface {
-	InstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	ReconcileRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, bool, error)
 	UninstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error)
 }
 
@@ -193,58 +198,62 @@ func getWatchesFile() (string, bool) {
 	return "", false
 }
 
-// InstallRelease accepts a custom resource, installs a Helm release using Tiller,
+// ReconcileRelease accepts a custom resource, ensures the described release is deployed,
 // and returns the custom resource with updated `status`.
-func (c installer) InstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+// - If the custom resource does not have a release, a new release will be installed
+// - If the custom resource has changes for an existing release, the release will be updated
+// - If the custom resource has no changes for an existing release, the underlying resources will be reconciled.
+func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, bool, error) {
+	needsUpdate := false
+
 	cr, err := valuesFromResource(r)
 	logrus.Infof("using values: %s", string(cr))
 	if err != nil {
-		return r, err
+		return r, needsUpdate, err
 	}
+	config := &cpb.Config{Raw: string(cr)}
 
-	var updatedRelease *release.Release
-	latestRelease, err := c.storageBackend.Last(releaseName(r))
+	err = processRequirements(c.chart, config)
+	if err != nil {
+		return r, needsUpdate, err
+	}
 
 	tiller := tillerRendererForCR(r, c.storageBackend, c.tillerKubeClient)
 
 	status := v1alpha1.StatusFor(r)
 	c.syncReleaseStatus(*status)
 
+	var updatedRelease *release.Release
+	latestRelease, err := c.storageBackend.Deployed(releaseName(r))
 	if err != nil || latestRelease == nil {
-		installReq := &services.InstallReleaseRequest{
-			Namespace: r.GetNamespace(),
-			Name:      releaseName(r),
-			Chart:     c.chart,
-			Values:    &cpb.Config{Raw: string(cr)},
-		}
-
-		err := processRequirements(installReq.Chart, installReq.Values)
+		updatedRelease, err = c.installRelease(r, tiller, c.chart, config)
 		if err != nil {
-			return nil, err
+			return r, needsUpdate, err
 		}
-
-		releaseResponse, err := tiller.InstallRelease(context.TODO(), installReq)
-		if err != nil {
-			return r, err
-		}
-		updatedRelease = releaseResponse.GetRelease()
+		needsUpdate = true
+		logrus.Infof("Installed release for %s release=%s", ResourceString(r), updatedRelease.GetName())
 	} else {
-		updateReq := &services.UpdateReleaseRequest{
-			Name:   releaseName(r),
-			Chart:  c.chart,
-			Values: &cpb.Config{Raw: string(cr)},
+		candidateRelease, err := c.getCandidateRelease(r, tiller, c.chart, config)
+		if err != nil {
+			return r, needsUpdate, err
 		}
 
-		err := processRequirements(updateReq.Chart, updateReq.Values)
-		if err != nil {
-			return r, err
+		latestManifest := latestRelease.GetManifest()
+		if latestManifest == candidateRelease.GetManifest() {
+			err = c.reconcileRelease(r, latestManifest)
+			if err != nil {
+				return r, needsUpdate, err
+			}
+			updatedRelease = latestRelease
+			logrus.Infof("Reconciled release for %s release=%s", ResourceString(r), updatedRelease.GetName())
+		} else {
+			updatedRelease, err = c.updateRelease(r, tiller, c.chart, config)
+			if err != nil {
+				return r, needsUpdate, err
+			}
+			needsUpdate = true
+			logrus.Infof("Updated release for %s release=%s", ResourceString(r), updatedRelease.GetName())
 		}
-
-		releaseResponse, err := tiller.UpdateRelease(context.TODO(), updateReq)
-		if err != nil {
-			return r, err
-		}
-		updatedRelease = releaseResponse.GetRelease()
 	}
 
 	status = v1alpha1.StatusFor(r)
@@ -253,7 +262,7 @@ func (c installer) InstallRelease(r *unstructured.Unstructured) (*unstructured.U
 	status.SetPhase(v1alpha1.PhaseApplied, v1alpha1.ReasonApplySuccessful, "")
 	r.Object["status"] = status
 
-	return r, nil
+	return r, needsUpdate, nil
 }
 
 // UninstallRelease accepts a custom resource, uninstalls the existing Helm release
@@ -279,8 +288,84 @@ func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured
 	if err != nil {
 		return r, err
 	}
-
+	logrus.Infof("Uninstalled release for %s release=%s", ResourceString(r), releaseName(r))
 	return r, nil
+}
+
+// ResourceString returns a human friendly string for the custom resource
+func ResourceString(r *unstructured.Unstructured) string {
+	return fmt.Sprintf("apiVersion=%s kind=%s name=%s/%s", r.GetAPIVersion(), r.GetKind(), r.GetNamespace(), r.GetName())
+}
+
+func (c installer) installRelease(r *unstructured.Unstructured, tiller *tiller.ReleaseServer, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
+	installReq := &services.InstallReleaseRequest{
+		Namespace: r.GetNamespace(),
+		Name:      releaseName(r),
+		Chart:     chart,
+		Values:    config,
+	}
+
+	releaseResponse, err := tiller.InstallRelease(context.TODO(), installReq)
+	if err != nil {
+		return nil, err
+	}
+	return releaseResponse.GetRelease(), nil
+}
+
+func (c installer) updateRelease(r *unstructured.Unstructured, tiller *tiller.ReleaseServer, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
+	updateReq := &services.UpdateReleaseRequest{
+		Name:   releaseName(r),
+		Chart:  chart,
+		Values: config,
+	}
+
+	releaseResponse, err := tiller.UpdateRelease(context.TODO(), updateReq)
+	if err != nil {
+		return nil, err
+	}
+	return releaseResponse.GetRelease(), nil
+}
+
+func (c installer) reconcileRelease(r *unstructured.Unstructured, expectedManifest string) error {
+	expectedInfos, err := c.tillerKubeClient.BuildUnstructured(r.GetNamespace(), bytes.NewBufferString(expectedManifest))
+	if err != nil {
+		return err
+	}
+	return expectedInfos.Visit(func(expected *resource.Info, err error) error {
+		if err != nil {
+			return err
+		}
+		helper := resource.NewHelper(expected.Client, expected.Mapping)
+		_, err = helper.Create(expected.Namespace, true, expected.Object)
+		if err == nil || !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+
+		patch, err := json.Marshal(expected.Object)
+		if err != nil {
+			return err
+		}
+
+		_, err = helper.Patch(expected.Namespace, expected.Name, types.MergePatchType, patch)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func (c installer) getCandidateRelease(r *unstructured.Unstructured, tiller *tiller.ReleaseServer, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
+	dryRunReq := &services.UpdateReleaseRequest{
+		Name:   releaseName(r),
+		Chart:  chart,
+		Values: config,
+		DryRun: true,
+	}
+	dryRunResponse, err := tiller.UpdateRelease(context.TODO(), dryRunReq)
+	if err != nil {
+		return nil, err
+	}
+	return dryRunResponse.GetRelease(), nil
 }
 
 func (c installer) syncReleaseStatus(status v1alpha1.HelmAppStatus) {

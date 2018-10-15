@@ -2,13 +2,16 @@ package helm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
 
 	"github.com/sirupsen/logrus"
 
 	yaml "gopkg.in/yaml.v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/helm/pkg/chartutil"
 	"k8s.io/helm/pkg/engine"
@@ -25,6 +28,13 @@ import (
 )
 
 const (
+	// HelmChartWatchesEnvVar is the environment variable for a YAML
+	// configuration file containing mappings of GVKs to helm charts. Use of
+	// this environment variable overrides the watch configuration provided
+	// by API_VERSION, KIND, and HELM_CHART, and it allows users to configure
+	// multiple watches, each with a different chart.
+	HelmChartWatchesEnvVar = "HELM_CHART_WATCHES"
+
 	// APIVersionEnvVar is the environment variable for the group and version
 	// to be watched using the format `<group>/<version>`
 	// (e.g. "example.com/v1alpha1").
@@ -39,14 +49,15 @@ const (
 	// API_VERSION and KIND environment variables.
 	HelmChartEnvVar = "HELM_CHART"
 
-	operatorName = "helm-app-operator"
+	operatorName                = "helm-app-operator"
+	defaultHelmChartWatchesFile = "/opt/helm/watches.yaml"
 )
 
 // Installer can install and uninstall Helm releases given a custom resource
 // which provides runtime values for the Chart.
 type Installer interface {
-	InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error)
-	UninstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error)
+	InstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	UninstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error)
 }
 
 type installer struct {
@@ -55,14 +66,21 @@ type installer struct {
 	chart            *cpb.Chart
 }
 
+type watch struct {
+	Group   string `yaml:"group"`
+	Version string `yaml:"version"`
+	Kind    string `yaml:"kind"`
+	Chart   string `yaml:"chart"`
+}
+
 // NewInstaller returns a new Helm installer capable of installing and uninstalling releases.
 func NewInstaller(storageBackend *storage.Storage, tillerKubeClient *kube.Client, chart *cpb.Chart) Installer {
 	return installer{storageBackend, tillerKubeClient, chart}
 }
 
-// NewInstallerFromEnv returns a GVK and installer based on configuration provided
+// newInstallerFromEnv returns a GVK and installer based on configuration provided
 // in the environment.
-func NewInstallerFromEnv(storageBackend *storage.Storage, tillerKubeClient *kube.Client) (schema.GroupVersionKind, Installer, error) {
+func newInstallerFromEnv(storageBackend *storage.Storage, tillerKubeClient *kube.Client) (schema.GroupVersionKind, Installer, error) {
 	apiVersion := os.Getenv(APIVersionEnvVar)
 	kind := os.Getenv(KindEnvVar)
 	chartDir := os.Getenv(HelmChartEnvVar)
@@ -74,35 +92,110 @@ func NewInstallerFromEnv(storageBackend *storage.Storage, tillerKubeClient *kube
 	}
 	gvk = gv.WithKind(kind)
 
-	// Verify the GVK. In general, GVKs without groups are valid. However,
-	// a GVK without a group will most likely fail with a more descriptive
-	// error later in the initialization process.
-	if gvk.Version == "" {
-		return gvk, nil, fmt.Errorf("invalid %s: version must not be empty", APIVersionEnvVar)
-	}
-	if gvk.Kind == "" {
-		return gvk, nil, fmt.Errorf("invalid %s: kind must not be empty", KindEnvVar)
+	if err := verifyGVK(gvk); err != nil {
+		return gvk, nil, fmt.Errorf("invalid GVK: %s: %s", gvk, err)
 	}
 
-	// Verify that the Helm chart directory is valid.
-	if chartDir == "" {
-		return gvk, nil, fmt.Errorf("invalid %s: must not be empty", HelmChartEnvVar)
-	}
-	if stat, err := os.Stat(chartDir); err != nil || !stat.IsDir() {
-		return gvk, nil, fmt.Errorf("invalid %s: %s is not a directory", HelmChartEnvVar, chartDir)
-	}
-	chart, err := chartutil.LoadDir(chartDir)
+	chart, err := loadChart(chartDir)
 	if err != nil {
-		return gvk, nil, fmt.Errorf("invalid %s: failed loading chart from %s: %s", HelmChartEnvVar, chartDir, err)
+		return gvk, nil, fmt.Errorf("invalid chart directory: failed to load chart from %s: %s", chartDir, err)
 	}
 
 	installer := NewInstaller(storageBackend, tillerKubeClient, chart)
 	return gvk, installer, nil
 }
 
+// NewInstallersFromEnv returns a map of installers, keyed by GVK, based on
+// configuration provided in the environment.
+func NewInstallersFromEnv(storageBackend *storage.Storage, tillerKubeClient *kube.Client) (map[schema.GroupVersionKind]Installer, error) {
+	if watchesFile, ok := getWatchesFile(); ok {
+		return NewInstallersFromFile(storageBackend, tillerKubeClient, watchesFile)
+	}
+	gvk, installer, err := newInstallerFromEnv(storageBackend, tillerKubeClient)
+	if err != nil {
+		return nil, err
+	}
+	return map[schema.GroupVersionKind]Installer{gvk: installer}, nil
+}
+
+// NewInstallersFromFile reads the config file at the provided path and returns a map
+// of installers, keyed by each GVK in the config.
+func NewInstallersFromFile(storageBackend *storage.Storage, tillerKubeClient *kube.Client, path string) (map[schema.GroupVersionKind]Installer, error) {
+	b, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %s", err)
+	}
+	watches := []watch{}
+	err = yaml.Unmarshal(b, &watches)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %s", err)
+	}
+
+	m := map[schema.GroupVersionKind]Installer{}
+	for _, w := range watches {
+		gvk := schema.GroupVersionKind{
+			Group:   w.Group,
+			Version: w.Version,
+			Kind:    w.Kind,
+		}
+
+		if err := verifyGVK(gvk); err != nil {
+			return nil, fmt.Errorf("invalid GVK: %s: %s", gvk, err)
+		}
+
+		chart, err := loadChart(w.Chart)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load chart from %s: %s", w.Chart, err)
+		}
+
+		if _, ok := m[gvk]; ok {
+			return nil, fmt.Errorf("duplicate GVK: %s", gvk)
+		}
+		m[gvk] = NewInstaller(storageBackend, tillerKubeClient, chart)
+	}
+	return m, nil
+}
+
+func verifyGVK(gvk schema.GroupVersionKind) error {
+	// A GVK without a group is valid. Certain scenarios may cause a GVK
+	// without a group to fail in other ways later in the initialization
+	// process.
+	if gvk.Version == "" {
+		return errors.New("version must not be empty")
+	}
+	if gvk.Kind == "" {
+		return errors.New("kind must not be empty")
+	}
+	return nil
+}
+
+func loadChart(path string) (*cpb.Chart, error) {
+	if path == "" {
+		return nil, errors.New("path must not be empty")
+	}
+	if stat, err := os.Stat(path); err != nil || !stat.IsDir() {
+		return nil, errors.New("path is not a directory")
+	}
+	return chartutil.LoadDir(path)
+}
+
+func getWatchesFile() (string, bool) {
+	// If the watches env variable is set (even if it's an empty string), use it
+	// since the user explicitly set it.
+	if watchesFile, ok := os.LookupEnv(HelmChartWatchesEnvVar); ok {
+		return watchesFile, true
+	}
+
+	// Next, check if the default watches file is present. If so, use it.
+	if _, err := os.Stat(defaultHelmChartWatchesFile); err == nil {
+		return defaultHelmChartWatchesFile, true
+	}
+	return "", false
+}
+
 // InstallRelease accepts a custom resource, installs a Helm release using Tiller,
 // and returns the custom resource with updated `status`.
-func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error) {
+func (c installer) InstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	cr, err := valuesFromResource(r)
 	logrus.Infof("using values: %s", string(cr))
 	if err != nil {
@@ -113,7 +206,9 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 	latestRelease, err := c.storageBackend.Last(releaseName(r))
 
 	tiller := tillerRendererForCR(r, c.storageBackend, c.tillerKubeClient)
-	c.syncReleaseStatus(r.Status)
+
+	status := v1alpha1.StatusFor(r)
+	c.syncReleaseStatus(*status)
 
 	if err != nil || latestRelease == nil {
 		installReq := &services.InstallReleaseRequest{
@@ -152,16 +247,18 @@ func (c installer) InstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error
 		updatedRelease = releaseResponse.GetRelease()
 	}
 
-	r.Status = *r.Status.SetRelease(updatedRelease)
-	// TODO(alecmerdler): Call `r.Status.SetPhase()` with `NOTES.txt` of rendered Chart
-	r.Status = *r.Status.SetPhase(v1alpha1.PhaseApplied, v1alpha1.ReasonApplySuccessful, "")
+	status = v1alpha1.StatusFor(r)
+	status.SetRelease(updatedRelease)
+	// TODO(alecmerdler): Call `status.SetPhase()` with `NOTES.txt` of rendered Chart
+	status.SetPhase(v1alpha1.PhaseApplied, v1alpha1.ReasonApplySuccessful, "")
+	r.Object["status"] = status
 
 	return r, nil
 }
 
 // UninstallRelease accepts a custom resource, uninstalls the existing Helm release
 // using Tiller, and returns the custom resource with updated `status`.
-func (c installer) UninstallRelease(r *v1alpha1.HelmApp) (*v1alpha1.HelmApp, error) {
+func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	// Get history of this release
 	h, err := c.storageBackend.History(releaseName(r))
 	if err != nil {
@@ -199,7 +296,7 @@ func (c installer) syncReleaseStatus(status v1alpha1.HelmAppStatus) {
 
 // tillerRendererForCR creates a ReleaseServer configured with a rendering engine that adds ownerrefs to rendered assets
 // based on the CR.
-func tillerRendererForCR(r *v1alpha1.HelmApp, storageBackend *storage.Storage, tillerKubeClient *kube.Client) *tiller.ReleaseServer {
+func tillerRendererForCR(r *unstructured.Unstructured, storageBackend *storage.Storage, tillerKubeClient *kube.Client) *tiller.ReleaseServer {
 	controllerRef := metav1.NewControllerRef(r, r.GroupVersionKind())
 	ownerRefs := []metav1.OwnerReference{
 		*controllerRef,
@@ -221,12 +318,12 @@ func tillerRendererForCR(r *v1alpha1.HelmApp, storageBackend *storage.Storage, t
 	return tiller.NewReleaseServer(env, internalClientSet, false)
 }
 
-func releaseName(r *v1alpha1.HelmApp) string {
+func releaseName(r *unstructured.Unstructured) string {
 	return fmt.Sprintf("%s-%s", operatorName, r.GetName())
 }
 
-func valuesFromResource(r *v1alpha1.HelmApp) ([]byte, error) {
-	return yaml.Marshal(r.Spec)
+func valuesFromResource(r *unstructured.Unstructured) ([]byte, error) {
+	return yaml.Marshal(r.Object["spec"])
 }
 
 // processRequirements will process the requirements file

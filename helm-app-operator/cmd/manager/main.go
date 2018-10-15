@@ -55,19 +55,20 @@ func main() {
 		logrus.Fatal(err)
 	}
 
-	// Dynamically load the helm installer based on the environment
-	gvk, installer, err := helm.NewInstallerFromEnv(storageBackend, tillerKubeClient)
+	installers, err := helm.NewInstallersFromEnv(storageBackend, tillerKubeClient)
 	if err != nil {
 		logrus.Fatal(err)
 	}
 
-	// Register the controller with the manager.
-	controller.Add(mgr, controller.WatchOptions{
-		Namespace:    namespace,
-		GVK:          gvk,
-		Installer:    installer,
-		ResyncPeriod: 5 * time.Second,
-	})
+	for gvk, installer := range installers {
+		// Register the controller with the manager.
+		controller.Add(mgr, controller.WatchOptions{
+			Namespace:    namespace,
+			GVK:          gvk,
+			Installer:    installer,
+			ResyncPeriod: 5 * time.Second,
+		})
+	}
 
 	logrus.Print("Starting the Cmd.")
 

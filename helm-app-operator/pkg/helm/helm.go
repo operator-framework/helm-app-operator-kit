@@ -24,6 +24,7 @@ import (
 	"k8s.io/helm/pkg/proto/hapi/release"
 	"k8s.io/helm/pkg/proto/hapi/services"
 	"k8s.io/helm/pkg/storage"
+	storageerrors "k8s.io/helm/pkg/storage/errors"
 	"k8s.io/helm/pkg/tiller"
 	"k8s.io/helm/pkg/tiller/environment"
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
@@ -213,10 +214,12 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 		return r, needsUpdate, fmt.Errorf("failed to process chart requirements: %s", err)
 	}
 
-	tiller := tillerRendererForCR(r, c.storageBackend, c.tillerKubeClient)
+	tiller := c.tillerRendererForCR(r)
 
 	status := v1alpha1.StatusFor(r)
-	c.syncReleaseStatus(*status)
+	if err := c.syncReleaseStatus(*status); err != nil {
+		return r, needsUpdate, fmt.Errorf("failed to sync release status: %s", err)
+	}
 
 	var updatedRelease *release.Release
 	latestRelease, err := c.storageBackend.Deployed(releaseName(r))
@@ -275,7 +278,7 @@ func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured
 		return r, nil
 	}
 
-	tiller := tillerRendererForCR(r, c.storageBackend, c.tillerKubeClient)
+	tiller := c.tillerRendererForCR(r)
 	_, err = tiller.UninstallRelease(context.TODO(), &services.UninstallReleaseRequest{
 		Name:  releaseName(r),
 		Purge: true,
@@ -363,20 +366,28 @@ func (c installer) getCandidateRelease(r *unstructured.Unstructured, tiller *til
 	return dryRunResponse.GetRelease(), nil
 }
 
-func (c installer) syncReleaseStatus(status v1alpha1.HelmAppStatus) {
+func (c installer) syncReleaseStatus(status v1alpha1.HelmAppStatus) error {
 	if status.Release == nil {
-		return
-	}
-	if _, err := c.storageBackend.Get(status.Release.GetName(), status.Release.GetVersion()); err == nil {
-		return
+		return nil
 	}
 
-	c.storageBackend.Create(status.Release)
+	name := status.Release.GetName()
+	version := status.Release.GetVersion()
+	_, err := c.storageBackend.Get(name, version)
+	if err == nil {
+		return nil
+	}
+
+	key := fmt.Sprintf("%s.v%d", name, version)
+	if err.Error() != storageerrors.ErrReleaseNotFound(key).Error() {
+		return err
+	}
+	return c.storageBackend.Create(status.Release)
 }
 
 // tillerRendererForCR creates a ReleaseServer configured with a rendering engine that adds ownerrefs to rendered assets
 // based on the CR.
-func tillerRendererForCR(r *unstructured.Unstructured, storageBackend *storage.Storage, tillerKubeClient *kube.Client) *tiller.ReleaseServer {
+func (c installer) tillerRendererForCR(r *unstructured.Unstructured) *tiller.ReleaseServer {
 	controllerRef := metav1.NewControllerRef(r, r.GroupVersionKind())
 	ownerRefs := []metav1.OwnerReference{
 		*controllerRef,
@@ -388,11 +399,10 @@ func tillerRendererForCR(r *unstructured.Unstructured, storageBackend *storage.S
 	}
 	env := &environment.Environment{
 		EngineYard: ey,
-		Releases:   storageBackend,
-		KubeClient: tillerKubeClient,
+		Releases:   c.storageBackend,
+		KubeClient: c.tillerKubeClient,
 	}
-	// Can't use `k8sclient.GetKubeClient()` because it implements the wrong interface
-	kubeconfig, _ := tillerKubeClient.ToRESTConfig()
+	kubeconfig, _ := c.tillerKubeClient.ToRESTConfig()
 	internalClientSet, _ := internalclientset.NewForConfig(kubeconfig)
 
 	return tiller.NewReleaseServer(env, internalClientSet, false)

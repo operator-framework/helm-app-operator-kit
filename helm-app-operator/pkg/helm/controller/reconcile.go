@@ -2,8 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -11,7 +9,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -23,9 +20,6 @@ type helmOperatorReconciler struct {
 	GVK          schema.GroupVersionKind
 	Installer    helm.Installer
 	ResyncPeriod time.Duration
-
-	lastResourceVersions map[types.NamespacedName]string
-	mutex                sync.RWMutex
 }
 
 const (
@@ -33,22 +27,25 @@ const (
 )
 
 func (r *helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.Result, error) {
-	logrus.Infof("processing %s", request.NamespacedName)
-
 	o := &unstructured.Unstructured{}
 	o.SetGroupVersionKind(r.GVK)
+	o.SetNamespace(request.Namespace)
+	o.SetName(request.Name)
+	logrus.Debugf("Processing %s", helm.ResourceString(o))
+
 	err := r.Client.Get(context.TODO(), request.NamespacedName, o)
 	if apierrors.IsNotFound(err) {
 		return reconcile.Result{}, nil
 	}
 	if err != nil {
+		logrus.Errorf("Failed to lookup %s: %s", helm.ResourceString(o), err)
 		return reconcile.Result{}, err
 	}
 
 	deleted := o.GetDeletionTimestamp() != nil
 	pendingFinalizers := o.GetFinalizers()
 	if !deleted && !contains(pendingFinalizers, finalizer) {
-		logrus.Debugf("adding finalizer %s to resource", finalizer)
+		logrus.Debugf("Adding finalizer \"%s\" to %s", finalizer, helm.ResourceString(o))
 		finalizers := append(pendingFinalizers, finalizer)
 		o.SetFinalizers(finalizers)
 		err := r.Client.Update(context.TODO(), o)
@@ -56,7 +53,7 @@ func (r *helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile
 	}
 	if deleted {
 		if !contains(pendingFinalizers, finalizer) {
-			logrus.Info("resouce is terminated, skipping reconciliation")
+			logrus.Infof("Resource %s is terminated, skipping reconciliation", helm.ResourceString(o))
 			return reconcile.Result{}, nil
 		}
 
@@ -76,24 +73,19 @@ func (r *helmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile
 		return reconcile.Result{}, err
 	}
 
-	lastResourceVersion, ok := r.getLastResourceVersion(request.NamespacedName)
-	if ok && o.GetResourceVersion() == lastResourceVersion {
-		logrus.Infof("skipping %s because resource version has not changed", request.NamespacedName)
-		return reconcile.Result{RequeueAfter: r.ResyncPeriod}, nil
-	}
-
-	updatedResource, err := r.Installer.InstallRelease(o)
+	updatedResource, needsUpdate, err := r.Installer.ReconcileRelease(o)
 	if err != nil {
-		logrus.Errorf(err.Error())
+		logrus.Errorf("Failed to reconcile release for %s: %s", helm.ResourceString(o), err)
 		return reconcile.Result{}, err
 	}
 
-	err = r.Client.Update(context.TODO(), updatedResource)
-	if err != nil {
-		logrus.Errorf(err.Error())
-		return reconcile.Result{}, fmt.Errorf("failed to update custom resource status: %v", err)
+	if needsUpdate {
+		err = r.Client.Update(context.TODO(), updatedResource)
+		if err != nil {
+			logrus.Errorf("Failed to update resource status for %s: %s", helm.ResourceString(o), err)
+			return reconcile.Result{}, err
+		}
 	}
-	r.setLastResourceVersion(request.NamespacedName, o.GetResourceVersion())
 
 	return reconcile.Result{RequeueAfter: r.ResyncPeriod}, nil
 }
@@ -105,17 +97,4 @@ func contains(l []string, s string) bool {
 		}
 	}
 	return false
-}
-
-func (r *helmOperatorReconciler) getLastResourceVersion(n types.NamespacedName) (string, bool) {
-	r.mutex.RLock()
-	defer r.mutex.RUnlock()
-	v, ok := r.lastResourceVersions[n]
-	return v, ok
-}
-
-func (r *helmOperatorReconciler) setLastResourceVersion(n types.NamespacedName, v string) {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	r.lastResourceVersions[n] = v
 }

@@ -1,7 +1,9 @@
 package helm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -10,9 +12,11 @@ import (
 	"github.com/sirupsen/logrus"
 
 	yaml "gopkg.in/yaml.v2"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/helm/pkg/chartutil"
 	"k8s.io/helm/pkg/engine"
 	"k8s.io/helm/pkg/kube"
@@ -20,9 +24,11 @@ import (
 	"k8s.io/helm/pkg/proto/hapi/release"
 	"k8s.io/helm/pkg/proto/hapi/services"
 	"k8s.io/helm/pkg/storage"
+	storageerrors "k8s.io/helm/pkg/storage/errors"
 	"k8s.io/helm/pkg/tiller"
 	"k8s.io/helm/pkg/tiller/environment"
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
+	"k8s.io/kubernetes/pkg/kubectl/genericclioptions/resource"
 
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/apis/app/v1alpha1"
 )
@@ -56,14 +62,14 @@ const (
 // Installer can install and uninstall Helm releases given a custom resource
 // which provides runtime values for the Chart.
 type Installer interface {
-	InstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	ReconcileRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, bool, error)
 	UninstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error)
 }
 
 type installer struct {
 	storageBackend   *storage.Storage
 	tillerKubeClient *kube.Client
-	chart            *cpb.Chart
+	chartDir         string
 }
 
 type watch struct {
@@ -74,8 +80,8 @@ type watch struct {
 }
 
 // NewInstaller returns a new Helm installer capable of installing and uninstalling releases.
-func NewInstaller(storageBackend *storage.Storage, tillerKubeClient *kube.Client, chart *cpb.Chart) Installer {
-	return installer{storageBackend, tillerKubeClient, chart}
+func NewInstaller(storageBackend *storage.Storage, tillerKubeClient *kube.Client, chartDir string) Installer {
+	return installer{storageBackend, tillerKubeClient, chartDir}
 }
 
 // newInstallerFromEnv returns a GVK and installer based on configuration provided
@@ -96,12 +102,11 @@ func newInstallerFromEnv(storageBackend *storage.Storage, tillerKubeClient *kube
 		return gvk, nil, fmt.Errorf("invalid GVK: %s: %s", gvk, err)
 	}
 
-	chart, err := loadChart(chartDir)
-	if err != nil {
-		return gvk, nil, fmt.Errorf("invalid chart directory: failed to load chart from %s: %s", chartDir, err)
+	if _, err := chartutil.IsChartDir(chartDir); err != nil {
+		return gvk, nil, fmt.Errorf("invalid chart directory %s: %s", chartDir, err)
 	}
 
-	installer := NewInstaller(storageBackend, tillerKubeClient, chart)
+	installer := NewInstaller(storageBackend, tillerKubeClient, chartDir)
 	return gvk, installer, nil
 }
 
@@ -143,15 +148,14 @@ func NewInstallersFromFile(storageBackend *storage.Storage, tillerKubeClient *ku
 			return nil, fmt.Errorf("invalid GVK: %s: %s", gvk, err)
 		}
 
-		chart, err := loadChart(w.Chart)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load chart from %s: %s", w.Chart, err)
+		if _, err := chartutil.IsChartDir(w.Chart); err != nil {
+			return nil, fmt.Errorf("invalid chart directory %s: %s", w.Chart, err)
 		}
 
 		if _, ok := m[gvk]; ok {
 			return nil, fmt.Errorf("duplicate GVK: %s", gvk)
 		}
-		m[gvk] = NewInstaller(storageBackend, tillerKubeClient, chart)
+		m[gvk] = NewInstaller(storageBackend, tillerKubeClient, w.Chart)
 	}
 	return m, nil
 }
@@ -169,16 +173,6 @@ func verifyGVK(gvk schema.GroupVersionKind) error {
 	return nil
 }
 
-func loadChart(path string) (*cpb.Chart, error) {
-	if path == "" {
-		return nil, errors.New("path must not be empty")
-	}
-	if stat, err := os.Stat(path); err != nil || !stat.IsDir() {
-		return nil, errors.New("path is not a directory")
-	}
-	return chartutil.LoadDir(path)
-}
-
 func getWatchesFile() (string, bool) {
 	// If the watches env variable is set (even if it's an empty string), use it
 	// since the user explicitly set it.
@@ -193,58 +187,71 @@ func getWatchesFile() (string, bool) {
 	return "", false
 }
 
-// InstallRelease accepts a custom resource, installs a Helm release using Tiller,
+// ReconcileRelease accepts a custom resource, ensures the described release is deployed,
 // and returns the custom resource with updated `status`.
-func (c installer) InstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error) {
-	cr, err := valuesFromResource(r)
-	logrus.Infof("using values: %s", string(cr))
+// - If the custom resource does not have a release, a new release will be installed
+// - If the custom resource has changes for an existing release, the release will be updated
+// - If the custom resource has no changes for an existing release, the underlying resources will be reconciled.
+func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, bool, error) {
+	needsUpdate := false
+
+	// chart is mutated by the call to processRequirements,
+	// so we need to reload it from disk every time.
+	chart, err := chartutil.LoadDir(c.chartDir)
 	if err != nil {
-		return r, err
+		return r, needsUpdate, fmt.Errorf("failed to load chart: %s", err)
+	}
+
+	cr, err := valuesFromResource(r)
+	if err != nil {
+		return r, needsUpdate, fmt.Errorf("failed to parse values: %s", err)
+	}
+	config := &cpb.Config{Raw: string(cr)}
+	logrus.Debugf("Using values: %s", config.GetRaw())
+
+	err = processRequirements(chart, config)
+	if err != nil {
+		return r, needsUpdate, fmt.Errorf("failed to process chart requirements: %s", err)
+	}
+
+	tiller := c.tillerRendererForCR(r)
+
+	status := v1alpha1.StatusFor(r)
+	if err := c.syncReleaseStatus(*status); err != nil {
+		return r, needsUpdate, fmt.Errorf("failed to sync release status: %s", err)
 	}
 
 	var updatedRelease *release.Release
-	latestRelease, err := c.storageBackend.Last(releaseName(r))
-
-	tiller := tillerRendererForCR(r, c.storageBackend, c.tillerKubeClient)
-
-	status := v1alpha1.StatusFor(r)
-	c.syncReleaseStatus(*status)
-
+	latestRelease, err := c.storageBackend.Deployed(releaseName(r))
 	if err != nil || latestRelease == nil {
-		installReq := &services.InstallReleaseRequest{
-			Namespace: r.GetNamespace(),
-			Name:      releaseName(r),
-			Chart:     c.chart,
-			Values:    &cpb.Config{Raw: string(cr)},
-		}
-
-		err := processRequirements(installReq.Chart, installReq.Values)
+		updatedRelease, err = c.installRelease(r, tiller, chart, config)
 		if err != nil {
-			return nil, err
+			return r, needsUpdate, fmt.Errorf("install error: %s", err)
 		}
-
-		releaseResponse, err := tiller.InstallRelease(context.TODO(), installReq)
-		if err != nil {
-			return r, err
-		}
-		updatedRelease = releaseResponse.GetRelease()
+		needsUpdate = true
+		logrus.Infof("Installed release for %s release=%s", ResourceString(r), updatedRelease.GetName())
 	} else {
-		updateReq := &services.UpdateReleaseRequest{
-			Name:   releaseName(r),
-			Chart:  c.chart,
-			Values: &cpb.Config{Raw: string(cr)},
+		candidateRelease, err := c.getCandidateRelease(r, tiller, chart, config)
+		if err != nil {
+			return r, needsUpdate, fmt.Errorf("failed to generate candidate release: %s", err)
 		}
 
-		err := processRequirements(updateReq.Chart, updateReq.Values)
-		if err != nil {
-			return r, err
+		latestManifest := latestRelease.GetManifest()
+		if latestManifest == candidateRelease.GetManifest() {
+			err = c.reconcileRelease(r, latestManifest)
+			if err != nil {
+				return r, needsUpdate, fmt.Errorf("reconcile error: %s", err)
+			}
+			updatedRelease = latestRelease
+			logrus.Infof("Reconciled release for %s release=%s", ResourceString(r), updatedRelease.GetName())
+		} else {
+			updatedRelease, err = c.updateRelease(r, tiller, chart, config)
+			if err != nil {
+				return r, needsUpdate, fmt.Errorf("update error: %s", err)
+			}
+			needsUpdate = true
+			logrus.Infof("Updated release for %s release=%s", ResourceString(r), updatedRelease.GetName())
 		}
-
-		releaseResponse, err := tiller.UpdateRelease(context.TODO(), updateReq)
-		if err != nil {
-			return r, err
-		}
-		updatedRelease = releaseResponse.GetRelease()
 	}
 
 	status = v1alpha1.StatusFor(r)
@@ -253,7 +260,7 @@ func (c installer) InstallRelease(r *unstructured.Unstructured) (*unstructured.U
 	status.SetPhase(v1alpha1.PhaseApplied, v1alpha1.ReasonApplySuccessful, "")
 	r.Object["status"] = status
 
-	return r, nil
+	return r, needsUpdate, nil
 }
 
 // UninstallRelease accepts a custom resource, uninstalls the existing Helm release
@@ -262,7 +269,7 @@ func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured
 	// Get history of this release
 	h, err := c.storageBackend.History(releaseName(r))
 	if err != nil {
-		return r, err
+		return r, fmt.Errorf("failed to get release history: %s", err)
 	}
 
 	// If there is no history, the release has already been uninstalled,
@@ -271,7 +278,7 @@ func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured
 		return r, nil
 	}
 
-	tiller := tillerRendererForCR(r, c.storageBackend, c.tillerKubeClient)
+	tiller := c.tillerRendererForCR(r)
 	_, err = tiller.UninstallRelease(context.TODO(), &services.UninstallReleaseRequest{
 		Name:  releaseName(r),
 		Purge: true,
@@ -279,24 +286,111 @@ func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured
 	if err != nil {
 		return r, err
 	}
-
+	logrus.Infof("Uninstalled release for %s release=%s", ResourceString(r), releaseName(r))
 	return r, nil
 }
 
-func (c installer) syncReleaseStatus(status v1alpha1.HelmAppStatus) {
-	if status.Release == nil {
-		return
-	}
-	if _, err := c.storageBackend.Get(status.Release.GetName(), status.Release.GetVersion()); err == nil {
-		return
+// ResourceString returns a human friendly string for the custom resource
+func ResourceString(r *unstructured.Unstructured) string {
+	return fmt.Sprintf("apiVersion=%s kind=%s name=%s/%s", r.GetAPIVersion(), r.GetKind(), r.GetNamespace(), r.GetName())
+}
+
+func (c installer) installRelease(r *unstructured.Unstructured, tiller *tiller.ReleaseServer, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
+	installReq := &services.InstallReleaseRequest{
+		Namespace: r.GetNamespace(),
+		Name:      releaseName(r),
+		Chart:     chart,
+		Values:    config,
 	}
 
-	c.storageBackend.Create(status.Release)
+	releaseResponse, err := tiller.InstallRelease(context.TODO(), installReq)
+	if err != nil {
+		return nil, err
+	}
+	return releaseResponse.GetRelease(), nil
+}
+
+func (c installer) updateRelease(r *unstructured.Unstructured, tiller *tiller.ReleaseServer, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
+	updateReq := &services.UpdateReleaseRequest{
+		Name:   releaseName(r),
+		Chart:  chart,
+		Values: config,
+	}
+
+	releaseResponse, err := tiller.UpdateRelease(context.TODO(), updateReq)
+	if err != nil {
+		return nil, err
+	}
+	return releaseResponse.GetRelease(), nil
+}
+
+func (c installer) reconcileRelease(r *unstructured.Unstructured, expectedManifest string) error {
+	expectedInfos, err := c.tillerKubeClient.BuildUnstructured(r.GetNamespace(), bytes.NewBufferString(expectedManifest))
+	if err != nil {
+		return err
+	}
+	return expectedInfos.Visit(func(expected *resource.Info, err error) error {
+		if err != nil {
+			return err
+		}
+		helper := resource.NewHelper(expected.Client, expected.Mapping)
+		_, err = helper.Create(expected.Namespace, true, expected.Object)
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create error: %s", err)
+		}
+
+		patch, err := json.Marshal(expected.Object)
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON patch: %s", err)
+		}
+
+		_, err = helper.Patch(expected.Namespace, expected.Name, types.MergePatchType, patch)
+		if err != nil {
+			return fmt.Errorf("patch error: %s", err)
+		}
+		return nil
+	})
+}
+
+func (c installer) getCandidateRelease(r *unstructured.Unstructured, tiller *tiller.ReleaseServer, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
+	dryRunReq := &services.UpdateReleaseRequest{
+		Name:   releaseName(r),
+		Chart:  chart,
+		Values: config,
+		DryRun: true,
+	}
+	dryRunResponse, err := tiller.UpdateRelease(context.TODO(), dryRunReq)
+	if err != nil {
+		return nil, err
+	}
+	return dryRunResponse.GetRelease(), nil
+}
+
+func (c installer) syncReleaseStatus(status v1alpha1.HelmAppStatus) error {
+	if status.Release == nil {
+		return nil
+	}
+
+	name := status.Release.GetName()
+	version := status.Release.GetVersion()
+	_, err := c.storageBackend.Get(name, version)
+	if err == nil {
+		return nil
+	}
+
+	key := fmt.Sprintf("%s.v%d", name, version)
+	if err.Error() != storageerrors.ErrReleaseNotFound(key).Error() {
+		return err
+	}
+	return c.storageBackend.Create(status.Release)
 }
 
 // tillerRendererForCR creates a ReleaseServer configured with a rendering engine that adds ownerrefs to rendered assets
 // based on the CR.
-func tillerRendererForCR(r *unstructured.Unstructured, storageBackend *storage.Storage, tillerKubeClient *kube.Client) *tiller.ReleaseServer {
+func (c installer) tillerRendererForCR(r *unstructured.Unstructured) *tiller.ReleaseServer {
 	controllerRef := metav1.NewControllerRef(r, r.GroupVersionKind())
 	ownerRefs := []metav1.OwnerReference{
 		*controllerRef,
@@ -308,11 +402,10 @@ func tillerRendererForCR(r *unstructured.Unstructured, storageBackend *storage.S
 	}
 	env := &environment.Environment{
 		EngineYard: ey,
-		Releases:   storageBackend,
-		KubeClient: tillerKubeClient,
+		Releases:   c.storageBackend,
+		KubeClient: c.tillerKubeClient,
 	}
-	// Can't use `k8sclient.GetKubeClient()` because it implements the wrong interface
-	kubeconfig, _ := tillerKubeClient.ToRESTConfig()
+	kubeconfig, _ := c.tillerKubeClient.ToRESTConfig()
 	internalClientSet, _ := internalclientset.NewForConfig(kubeconfig)
 
 	return tiller.NewReleaseServer(env, internalClientSet, false)

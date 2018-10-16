@@ -335,7 +335,10 @@ func (c installer) reconcileRelease(r *unstructured.Unstructured, expectedManife
 		}
 		helper := resource.NewHelper(expected.Client, expected.Mapping)
 		_, err = helper.Create(expected.Namespace, true, expected.Object)
-		if err == nil || !apierrors.IsAlreadyExists(err) {
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create error: %s", err)
 		}
 

@@ -18,12 +18,15 @@ import (
 	"fmt"
 	"strings"
 
+	"bytes"
+
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/helm/pkg/chartutil"
 	"k8s.io/helm/pkg/proto/hapi/chart"
+	"k8s.io/helm/pkg/releaseutil"
 	"k8s.io/helm/pkg/tiller/environment"
 )
 
@@ -63,24 +66,39 @@ func (o *OwnerRefEngine) Render(chart *chart.Chart, values chartutil.Values) (ma
 }
 
 // addOwnerRefs adds the configured ownerRefs to a single rendered file
+// Adds the ownerrefs to all the documents in a YAML file
 func (o *OwnerRefEngine) addOwnerRefs(fileContents string) (string, error) {
-	parsed := chartutil.FromYaml(fileContents)
-	if errors, ok := parsed["Error"]; ok {
-		return "", fmt.Errorf("error parsing rendered template to add ownerrefs: %v", errors)
+	const documentSeparator = "---\n"
+	var outBuf bytes.Buffer
+
+	for _, manifest := range releaseutil.SplitManifests(fileContents) {
+		manifestMap := chartutil.FromYaml(manifest)
+		if errors, ok := manifestMap["Error"]; ok {
+			return "", fmt.Errorf("error parsing rendered template to add ownerrefs: %v", errors)
+		}
+
+		// Check if the document is empty
+		if len(manifestMap) == 0 {
+			continue
+		}
+
+		unst, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&manifestMap)
+		if err != nil {
+			return "", err
+		}
+
+		unstructured := &unstructured.Unstructured{Object: unst}
+		unstructured.SetOwnerReferences(o.refs)
+
+		// Write the document with owner ref to the buffer
+		// Also add document start marker
+		_, err = outBuf.WriteString(documentSeparator + chartutil.ToYaml(unstructured.Object))
+		if err != nil {
+			return "", fmt.Errorf("error writing the document to buffer: %v", err)
+		}
 	}
 
-	// Empty input
-	if len(parsed) == 0 {
-		return "", nil
-	}
-
-	unst, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&parsed)
-	if err != nil {
-		return "", err
-	}
-	unstructured := &unstructured.Unstructured{Object: unst}
-	unstructured.SetOwnerReferences(o.refs)
-	return chartutil.ToYaml(unstructured.Object), nil
+	return outBuf.String(), nil
 }
 
 // NewOwnerRefEngine creates a new OwnerRef engine with a set of metav1.OwnerReferences to be added to assets

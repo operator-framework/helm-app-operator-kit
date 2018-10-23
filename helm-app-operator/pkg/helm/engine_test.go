@@ -49,7 +49,8 @@ spec:
   Name: Nemo
 `
 
-	expectedOut := `apiVersion: stable.nicolerenee.io/v1
+	expectedOut := `---
+apiVersion: stable.nicolerenee.io/v1
 kind: Character
 metadata:
   name: nemo
@@ -74,4 +75,64 @@ spec:
 	out, err := engine.Render(&chart.Chart{}, map[string]interface{}{})
 	require.NoError(t, err)
 	require.EqualValues(t, expected, out)
+}
+
+func TestOwnerRefEngine_MultiDocumentYaml(t *testing.T) {
+	ownerRefs := []metav1.OwnerReference{
+		{
+			APIVersion: "v1",
+			Kind:       "Test",
+			Name:       "test",
+			UID:        "123",
+		},
+	}
+
+	baseOut := `kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: eighth
+  data:
+    name: value
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example-test
+`
+
+	expectedOut := `---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  data:
+    name: value
+  name: eighth
+  ownerReferences:
+  - apiVersion: v1
+    kind: Test
+    name: test
+    uid: "123"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example-test
+  ownerReferences:
+  - apiVersion: v1
+    kind: Test
+    name: test
+    uid: "123"
+`
+
+	expected := map[string]string{"template.yaml": expectedOut}
+
+	baseEngineOutput := map[string]string{
+		"template.yaml": baseOut,
+	}
+
+	engine := NewOwnerRefEngine(&mockEngine{out: baseEngineOutput}, ownerRefs)
+	out, err := engine.Render(&chart.Chart{}, map[string]interface{}{})
+
+	require.NoError(t, err)
+	require.Equal(t, expected, out)
 }

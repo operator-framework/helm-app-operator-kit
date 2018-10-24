@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tomcat-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: tomcat-operator
+  template:
+    metadata:
+      labels:
+        name: tomcat-operator
+    spec:
+      containers:
+        - name: tomcat-operator
+          image: REPLACE_IMAGE
+          imagePullPolicy: Always
+          env:
+            - name: WATCH_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace

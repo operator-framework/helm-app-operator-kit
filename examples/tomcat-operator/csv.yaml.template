@@ -1,5 +1,5 @@
-apiVersion: app.coreos.com/v1alpha1
-kind: ClusterServiceVersion-v1
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
 metadata:
   name: tomcat-operator.v0.0.1
 spec:
@@ -68,7 +68,7 @@ spec:
             spec:
               containers:
                 - name: tomcat-operator-olm-owned
-                  image: quay.io/alecmerdler/tomcat-operator
+                  image: REPLACE_IMAGE
                   imagePullPolicy: Always
                   env:
                   - name: MY_POD_NAMESPACE

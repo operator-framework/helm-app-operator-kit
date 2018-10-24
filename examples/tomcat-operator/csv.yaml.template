@@ -68,7 +68,7 @@ spec:
             spec:
               containers:
                 - name: tomcat-operator-olm-owned
-                  image: quay.io/alecmerdler/tomcat-operator
+                  image: REPLACE_IMAGE
                   imagePullPolicy: Always
                   env:
                   - name: MY_POD_NAMESPACE

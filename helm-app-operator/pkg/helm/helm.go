@@ -24,6 +24,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/martinlindhe/base36"
+	"github.com/pborman/uuid"
 	"github.com/sirupsen/logrus"
 
 	yaml "gopkg.in/yaml.v2"
@@ -69,7 +71,6 @@ const (
 	// API_VERSION and KIND environment variables.
 	HelmChartEnvVar = "HELM_CHART"
 
-	operatorName                = "helm-app-operator"
 	defaultHelmChartWatchesFile = "/opt/helm/watches.yaml"
 )
 
@@ -235,8 +236,10 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 		return r, needsUpdate, fmt.Errorf("failed to sync release status: %s", err)
 	}
 
+	releaseName := getReleaseName(r)
+
 	// Get release history for this release name
-	releases, err := c.storageBackend.History(releaseName(r))
+	releases, err := c.storageBackend.History(releaseName)
 	if err != nil && !notFoundErr(err) {
 		return r, needsUpdate, fmt.Errorf("failed to retrieve release history: %s", err)
 	}
@@ -254,30 +257,31 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 	}
 
 	var updatedRelease *release.Release
-	latestRelease, err := c.storageBackend.Deployed(releaseName(r))
+	latestRelease, err := c.storageBackend.Deployed(releaseName)
 	if err != nil || latestRelease == nil {
-		updatedRelease, err = c.installRelease(r, tiller, chart, config)
+		// If there's no deployed release, attempt a tiller install.
+		updatedRelease, err = c.installRelease(tiller, r.GetNamespace(), releaseName, chart, config)
 		if err != nil {
 			return r, needsUpdate, fmt.Errorf("install error: %s", err)
 		}
 		needsUpdate = true
 		logrus.Infof("Installed release for %s release=%s", ResourceString(r), updatedRelease.GetName())
 	} else {
-		candidateRelease, err := c.getCandidateRelease(r, tiller, chart, config)
+		candidateRelease, err := c.getCandidateRelease(tiller, releaseName, chart, config)
 		if err != nil {
 			return r, needsUpdate, fmt.Errorf("failed to generate candidate release: %s", err)
 		}
 
 		latestManifest := latestRelease.GetManifest()
 		if latestManifest == candidateRelease.GetManifest() {
-			err = c.reconcileRelease(r, latestManifest)
+			err = c.reconcileRelease(r.GetNamespace(), latestManifest)
 			if err != nil {
 				return r, needsUpdate, fmt.Errorf("reconcile error: %s", err)
 			}
 			updatedRelease = latestRelease
 			logrus.Infof("Reconciled release for %s release=%s", ResourceString(r), updatedRelease.GetName())
 		} else {
-			updatedRelease, err = c.updateRelease(r, tiller, chart, config)
+			updatedRelease, err = c.updateRelease(tiller, releaseName, chart, config)
 			if err != nil {
 				return r, needsUpdate, fmt.Errorf("update error: %s", err)
 			}
@@ -298,8 +302,10 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 // UninstallRelease accepts a custom resource, uninstalls the existing Helm release
 // using Tiller, and returns the custom resource with updated `status`.
 func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	releaseName := getReleaseName(r)
+
 	// Get history of this release
-	h, err := c.storageBackend.History(releaseName(r))
+	h, err := c.storageBackend.History(releaseName)
 	if err != nil {
 		return r, fmt.Errorf("failed to get release history: %s", err)
 	}
@@ -312,13 +318,13 @@ func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured
 
 	tiller := c.tillerRendererForCR(r)
 	_, err = tiller.UninstallRelease(context.TODO(), &services.UninstallReleaseRequest{
-		Name:  releaseName(r),
+		Name:  releaseName,
 		Purge: true,
 	})
 	if err != nil {
 		return r, err
 	}
-	logrus.Infof("Uninstalled release for %s release=%s", ResourceString(r), releaseName(r))
+	logrus.Infof("Uninstalled release for %s release=%s", ResourceString(r), releaseName)
 	return r, nil
 }
 
@@ -327,37 +333,59 @@ func ResourceString(r *unstructured.Unstructured) string {
 	return fmt.Sprintf("apiVersion=%s kind=%s name=%s/%s", r.GetAPIVersion(), r.GetKind(), r.GetNamespace(), r.GetName())
 }
 
-func (c installer) installRelease(r *unstructured.Unstructured, tiller *tiller.ReleaseServer, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
+func (c installer) installRelease(tiller *tiller.ReleaseServer, namespace, name string, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
 	installReq := &services.InstallReleaseRequest{
-		Namespace: r.GetNamespace(),
-		Name:      releaseName(r),
+		Namespace: namespace,
+		Name:      name,
 		Chart:     chart,
 		Values:    config,
 	}
 
 	releaseResponse, err := tiller.InstallRelease(context.TODO(), installReq)
 	if err != nil {
+		// Workaround for helm/helm#3338
+		if releaseResponse.GetRelease() != nil {
+			uninstallReq := &services.UninstallReleaseRequest{
+				Name:  releaseResponse.GetRelease().GetName(),
+				Purge: true,
+			}
+			_, uninstallErr := tiller.UninstallRelease(context.TODO(), uninstallReq)
+			if uninstallErr != nil {
+				return nil, fmt.Errorf("failed to roll back failed installation: %s: %s", uninstallErr, err)
+			}
+		}
 		return nil, err
 	}
 	return releaseResponse.GetRelease(), nil
 }
 
-func (c installer) updateRelease(r *unstructured.Unstructured, tiller *tiller.ReleaseServer, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
+func (c installer) updateRelease(tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
 	updateReq := &services.UpdateReleaseRequest{
-		Name:   releaseName(r),
+		Name:   name,
 		Chart:  chart,
 		Values: config,
 	}
 
 	releaseResponse, err := tiller.UpdateRelease(context.TODO(), updateReq)
 	if err != nil {
+		// Workaround for helm/helm#3338
+		if releaseResponse.GetRelease() != nil {
+			rollbackReq := &services.RollbackReleaseRequest{
+				Name:  name,
+				Force: true,
+			}
+			_, rollbackErr := tiller.RollbackRelease(context.TODO(), rollbackReq)
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("failed to roll back failed update: %s: %s", rollbackErr, err)
+			}
+		}
 		return nil, err
 	}
 	return releaseResponse.GetRelease(), nil
 }
 
-func (c installer) reconcileRelease(r *unstructured.Unstructured, expectedManifest string) error {
-	expectedInfos, err := c.tillerKubeClient.BuildUnstructured(r.GetNamespace(), bytes.NewBufferString(expectedManifest))
+func (c installer) reconcileRelease(namespace string, expectedManifest string) error {
+	expectedInfos, err := c.tillerKubeClient.BuildUnstructured(namespace, bytes.NewBufferString(expectedManifest))
 	if err != nil {
 		return err
 	}
@@ -387,9 +415,9 @@ func (c installer) reconcileRelease(r *unstructured.Unstructured, expectedManife
 	})
 }
 
-func (c installer) getCandidateRelease(r *unstructured.Unstructured, tiller *tiller.ReleaseServer, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
+func (c installer) getCandidateRelease(tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
 	dryRunReq := &services.UpdateReleaseRequest{
-		Name:   releaseName(r),
+		Name:   name,
 		Chart:  chart,
 		Values: config,
 		DryRun: true,
@@ -442,8 +470,8 @@ func (c installer) tillerRendererForCR(r *unstructured.Unstructured) *tiller.Rel
 	return tiller.NewReleaseServer(env, internalClientSet, false)
 }
 
-func releaseName(r *unstructured.Unstructured) string {
-	return fmt.Sprintf("%s-%s", operatorName, r.GetName())
+func getReleaseName(r *unstructured.Unstructured) string {
+	return fmt.Sprintf("%s-%s", r.GetName(), shortenUID(r.GetUID()))
 }
 
 func notFoundErr(err error) bool {
@@ -467,4 +495,14 @@ func processRequirements(chart *cpb.Chart, values *cpb.Config) error {
 		return err
 	}
 	return nil
+}
+
+func shortenUID(uid types.UID) (shortUID string) {
+	u := uuid.Parse(string(uid))
+	uidBytes, err := u.MarshalBinary()
+	if err != nil {
+		shortUID = strings.Replace(string(uid), "-", "", -1)
+	}
+	shortUID = strings.ToLower(base36.EncodeBytes(uidBytes))
+	return
 }

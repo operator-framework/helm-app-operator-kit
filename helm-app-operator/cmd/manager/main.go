@@ -28,8 +28,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/signals"
 
-	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm"
+	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/client"
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/controller"
+	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/release"
 )
 
 func printVersion() {
@@ -64,12 +65,12 @@ func main() {
 
 	// Create Tiller's storage backend and kubernetes client
 	storageBackend := storage.Init(driver.NewMemory())
-	tillerKubeClient, err := helm.NewTillerClientFromManager(mgr)
+	tillerKubeClient, err := client.NewFromManager(mgr)
 	if err != nil {
 		logrus.Fatal(err)
 	}
 
-	installers, err := helm.NewInstallersFromEnv(storageBackend, tillerKubeClient)
+	installers, err := release.NewInstallersFromEnv(storageBackend, tillerKubeClient)
 	if err != nil {
 		logrus.Fatal(err)
 	}

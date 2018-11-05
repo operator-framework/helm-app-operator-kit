@@ -12,6 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +k8s:deepcopy-gen=package
-// +groupName=app.coreos.com
-package v1alpha1
+// Package engine provides an implementation of Helm's templating engine
+// required for a Helm operator.
+package engine

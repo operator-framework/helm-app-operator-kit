@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package helm
+package release
 
 import (
 	"bytes"
@@ -22,12 +22,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/martinlindhe/base36"
 	"github.com/pborman/uuid"
-	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/sirupsen/logrus"
 
 	yaml "gopkg.in/yaml.v2"
@@ -35,9 +33,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
+	apitypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/helm/pkg/chartutil"
-	"k8s.io/helm/pkg/engine"
+	helmengine "k8s.io/helm/pkg/engine"
 	"k8s.io/helm/pkg/kube"
 	cpb "k8s.io/helm/pkg/proto/hapi/chart"
 	"k8s.io/helm/pkg/proto/hapi/release"
@@ -48,7 +46,9 @@ import (
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	"k8s.io/kubernetes/pkg/kubectl/genericclioptions/resource"
 
-	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/apis/app/v1alpha1"
+	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/engine"
+	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/internal/types"
+	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/internal/util"
 )
 
 const (
@@ -233,7 +233,7 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 
 	tiller := c.tillerRendererForCR(r)
 
-	status := v1alpha1.StatusFor(r)
+	status := types.StatusFor(r)
 	if err := c.syncReleaseStatus(*status); err != nil {
 		return r, needsUpdate, fmt.Errorf("failed to sync release status: %s", err)
 	}
@@ -267,8 +267,8 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 			return r, needsUpdate, fmt.Errorf("install error: %s", err)
 		}
 		needsUpdate = true
-		diffStr := diff("", updatedRelease.GetManifest())
-		logrus.Infof("Installed release for %s release=%s; diff:\n%s", ResourceString(r), updatedRelease.GetName(), diffStr)
+		diffStr := util.Diff("", updatedRelease.GetManifest())
+		logrus.Infof("Installed release for %s release=%s; diff:\n%s", util.ResourceString(r), updatedRelease.GetName(), diffStr)
 	} else {
 		candidateRelease, err := c.getCandidateRelease(tiller, releaseName, chart, config)
 		if err != nil {
@@ -282,22 +282,22 @@ func (c installer) ReconcileRelease(r *unstructured.Unstructured) (*unstructured
 				return r, needsUpdate, fmt.Errorf("reconcile error: %s", err)
 			}
 			updatedRelease = latestRelease
-			logrus.Infof("Reconciled release for %s release=%s", ResourceString(r), updatedRelease.GetName())
+			logrus.Infof("Reconciled release for %s release=%s", util.ResourceString(r), updatedRelease.GetName())
 		} else {
 			updatedRelease, err = c.updateRelease(tiller, releaseName, chart, config)
 			if err != nil {
 				return r, needsUpdate, fmt.Errorf("update error: %s", err)
 			}
 			needsUpdate = true
-			diffStr := diff(latestManifest, updatedRelease.GetManifest())
-			logrus.Infof("Updated release for %s release=%s; diff:\n%s", ResourceString(r), updatedRelease.GetName(), diffStr)
+			diffStr := util.Diff(latestManifest, updatedRelease.GetManifest())
+			logrus.Infof("Updated release for %s release=%s; diff:\n%s", util.ResourceString(r), updatedRelease.GetName(), diffStr)
 		}
 	}
 
-	status = v1alpha1.StatusFor(r)
+	status = types.StatusFor(r)
 	status.SetRelease(updatedRelease)
 	// TODO(alecmerdler): Call `status.SetPhase()` with `NOTES.txt` of rendered Chart
-	status.SetPhase(v1alpha1.PhaseApplied, v1alpha1.ReasonApplySuccessful, "")
+	status.SetPhase(types.PhaseApplied, types.ReasonApplySuccessful, "")
 	r.Object["status"] = status
 
 	return r, needsUpdate, nil
@@ -328,14 +328,9 @@ func (c installer) UninstallRelease(r *unstructured.Unstructured) (*unstructured
 	if err != nil {
 		return r, err
 	}
-	diffStr := diff(uninstallResponse.GetRelease().GetManifest(), "")
-	logrus.Infof("Uninstalled release for %s release=%s; diff:\n%s", ResourceString(r), releaseName, diffStr)
+	diffStr := util.Diff(uninstallResponse.GetRelease().GetManifest(), "")
+	logrus.Infof("Uninstalled release for %s release=%s; diff:\n%s", util.ResourceString(r), releaseName, diffStr)
 	return r, nil
-}
-
-// ResourceString returns a human friendly string for the custom resource
-func ResourceString(r *unstructured.Unstructured) string {
-	return fmt.Sprintf("apiVersion=%s kind=%s name=%s/%s", r.GetAPIVersion(), r.GetKind(), r.GetNamespace(), r.GetName())
 }
 
 func (c installer) installRelease(tiller *tiller.ReleaseServer, namespace, name string, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
@@ -412,7 +407,7 @@ func (c installer) reconcileRelease(namespace string, expectedManifest string) e
 			return fmt.Errorf("failed to marshal JSON patch: %s", err)
 		}
 
-		_, err = helper.Patch(expected.Namespace, expected.Name, types.MergePatchType, patch)
+		_, err = helper.Patch(expected.Namespace, expected.Name, apitypes.MergePatchType, patch)
 		if err != nil {
 			return fmt.Errorf("patch error: %s", err)
 		}
@@ -434,7 +429,7 @@ func (c installer) getCandidateRelease(tiller *tiller.ReleaseServer, name string
 	return dryRunResponse.GetRelease(), nil
 }
 
-func (c installer) syncReleaseStatus(status v1alpha1.HelmAppStatus) error {
+func (c installer) syncReleaseStatus(status types.HelmAppStatus) error {
 	if status.Release == nil {
 		return nil
 	}
@@ -459,8 +454,8 @@ func (c installer) tillerRendererForCR(r *unstructured.Unstructured) *tiller.Rel
 	ownerRefs := []metav1.OwnerReference{
 		*controllerRef,
 	}
-	baseEngine := engine.New()
-	e := NewOwnerRefEngine(baseEngine, ownerRefs)
+	baseEngine := helmengine.New()
+	e := engine.NewOwnerRefEngine(baseEngine, ownerRefs)
 	var ey environment.EngineYard = map[string]environment.Engine{
 		environment.GoTplEngine: e,
 	}
@@ -502,7 +497,7 @@ func processRequirements(chart *cpb.Chart, values *cpb.Config) error {
 	return nil
 }
 
-func shortenUID(uid types.UID) (shortUID string) {
+func shortenUID(uid apitypes.UID) (shortUID string) {
 	u := uuid.Parse(string(uid))
 	uidBytes, err := u.MarshalBinary()
 	if err != nil {
@@ -510,39 +505,4 @@ func shortenUID(uid types.UID) (shortUID string) {
 	}
 	shortUID = strings.ToLower(base36.EncodeBytes(uidBytes))
 	return
-}
-
-func diff(a, b string) string {
-	dmp := diffmatchpatch.New()
-	wSrc, wDst, warray := dmp.DiffLinesToRunes(a, b)
-	diffs := dmp.DiffMainRunes(wSrc, wDst, false)
-	diffs = dmp.DiffCharsToLines(diffs, warray)
-	var buff bytes.Buffer
-	for _, diff := range diffs {
-		text := diff.Text
-		switch diff.Type {
-		case diffmatchpatch.DiffInsert:
-			_, _ = buff.WriteString("\x1b[32m")
-			_, _ = buff.WriteString(prefixLines(text, "+"))
-			_, _ = buff.WriteString("\x1b[0m")
-		case diffmatchpatch.DiffDelete:
-			_, _ = buff.WriteString("\x1b[31m")
-			_, _ = buff.WriteString(prefixLines(text, "-"))
-			_, _ = buff.WriteString("\x1b[0m")
-		case diffmatchpatch.DiffEqual:
-			_, _ = buff.WriteString(prefixLines(text, " "))
-		}
-	}
-	return buff.String()
-}
-
-func prefixLines(s, prefix string) string {
-	var buf bytes.Buffer
-	lines := strings.Split(s, "\n")
-	ls := regexp.MustCompile("^")
-	for _, line := range lines[:len(lines)-1] {
-		buf.WriteString(ls.ReplaceAllString(line, prefix))
-		buf.WriteString("\n")
-	}
-	return buf.String()
 }

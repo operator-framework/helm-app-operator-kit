@@ -35,7 +35,7 @@ var _ reconcile.Reconciler = &HelmOperatorReconciler{}
 type HelmOperatorReconciler struct {
 	Client       client.Client
 	GVK          schema.GroupVersionKind
-	Installer    release.Installer
+	Manager      release.Manager
 	ResyncPeriod time.Duration
 }
 
@@ -74,7 +74,7 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 			return reconcile.Result{}, nil
 		}
 
-		_, err = r.Installer.UninstallRelease(o)
+		_, err = r.Manager.UninstallRelease(o)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
@@ -90,7 +90,7 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 		return reconcile.Result{}, err
 	}
 
-	updatedResource, needsUpdate, err := r.Installer.ReconcileRelease(o)
+	updatedResource, needsUpdate, err := r.Manager.ReconcileRelease(o)
 	if err != nil {
 		logrus.Errorf("failed to reconcile release for %s: %s", util.ResourceString(o), err)
 		return reconcile.Result{}, err

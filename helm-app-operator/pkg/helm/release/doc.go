@@ -13,6 +13,6 @@
 // limitations under the License.
 
 // Package release provides interfaces and default implementations for a Helm
-// release installer, which is used by the Helm controller and reconciler to
+// release manager, which is used by the Helm controller and reconciler to
 // manage Helm releases in a cluster based on watched custom resources.
 package release

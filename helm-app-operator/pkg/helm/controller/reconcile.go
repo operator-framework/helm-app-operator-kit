@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/internal/types"
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/internal/util"
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/release"
 )
@@ -33,10 +34,10 @@ import (
 var _ reconcile.Reconciler = &HelmOperatorReconciler{}
 
 type HelmOperatorReconciler struct {
-	Client       client.Client
-	GVK          schema.GroupVersionKind
-	Manager      release.Manager
-	ResyncPeriod time.Duration
+	Client         client.Client
+	GVK            schema.GroupVersionKind
+	ManagerFactory release.ManagerFactory
+	ResyncPeriod   time.Duration
 }
 
 const (
@@ -68,13 +69,16 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 		err := r.Client.Update(context.TODO(), o)
 		return reconcile.Result{}, err
 	}
+
+	manager := r.ManagerFactory.NewManager(o)
+
 	if deleted {
 		if !contains(pendingFinalizers, finalizer) {
 			logrus.Infof("Resource %s is terminated, skipping reconciliation", util.ResourceString(o))
 			return reconcile.Result{}, nil
 		}
 
-		_, err = r.Manager.UninstallRelease(o)
+		_, err = manager.UninstallRelease()
 		if err != nil {
 			return reconcile.Result{}, err
 		}
@@ -90,14 +94,20 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 		return reconcile.Result{}, err
 	}
 
-	updatedResource, needsUpdate, err := r.Manager.ReconcileRelease(o)
+	updatedRelease, needsUpdate, err := manager.ReconcileRelease()
 	if err != nil {
 		logrus.Errorf("failed to reconcile release for %s: %s", util.ResourceString(o), err)
 		return reconcile.Result{}, err
 	}
 
 	if needsUpdate {
-		err = r.Client.Update(context.TODO(), updatedResource)
+		status := types.StatusFor(o)
+		status.SetRelease(updatedRelease)
+		// TODO(alecmerdler): Call `status.SetPhase()` with `NOTES.txt` of rendered Chart
+		status.SetPhase(types.PhaseApplied, types.ReasonApplySuccessful, "")
+		o.Object["status"] = status
+
+		err = r.Client.Update(context.TODO(), o)
 		if err != nil {
 			logrus.Errorf("failed to update resource status for %s: %s", util.ResourceString(o), err)
 			return reconcile.Result{}, err

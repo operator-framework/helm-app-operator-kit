@@ -33,6 +33,7 @@ import (
 
 var _ reconcile.Reconciler = &HelmOperatorReconciler{}
 
+// HelmOperatorReconciler reconciles custom resources as Helm releases.
 type HelmOperatorReconciler struct {
 	Client         client.Client
 	GVK            schema.GroupVersionKind
@@ -44,6 +45,10 @@ const (
 	finalizer = "uninstall-helm-release"
 )
 
+// Reconcile reconciles the requested resource by installing, updating, or
+// uninstalling a Helm release based on the resource's current state. If no
+// release changes are necessary, Reconcile will create or patch the underlying
+// resources to match the expected release manifest.
 func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	o := &unstructured.Unstructured{}
 	o.SetGroupVersionKind(r.GVK)
@@ -71,6 +76,13 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 	}
 
 	manager := r.ManagerFactory.NewManager(o)
+	status := types.StatusFor(o)
+	releaseName := manager.ReleaseName()
+
+	if err := manager.Sync(); err != nil {
+		logrus.Errorf("failed to sync release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
+		return reconcile.Result{}, err
+	}
 
 	if deleted {
 		if !contains(pendingFinalizers, finalizer) {
@@ -78,11 +90,17 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 			return reconcile.Result{}, nil
 		}
 
-		_, err = manager.UninstallRelease()
-		if err != nil {
+		uninstalledRelease, err := manager.UninstallRelease()
+		if err != nil && err != release.ErrNotFound {
+			logrus.Errorf("failed to uninstall release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
 			return reconcile.Result{}, err
 		}
-
+		if err == release.ErrNotFound {
+			logrus.Infof("Release %s for resource %s not found, removing finalizer", releaseName, util.ResourceString(o))
+		} else {
+			diff := util.Diff(uninstalledRelease.GetManifest(), "")
+			logrus.Infof("Uninstalled release for %s release=%s; diff:\n%s", util.ResourceString(o), releaseName, diff)
+		}
 		finalizers := []string{}
 		for _, pendingFinalizer := range pendingFinalizers {
 			if pendingFinalizer != finalizer {
@@ -90,31 +108,53 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 			}
 		}
 		o.SetFinalizers(finalizers)
-		err := r.Client.Update(context.TODO(), o)
-		return reconcile.Result{}, err
-	}
-
-	updatedRelease, needsUpdate, err := manager.ReconcileRelease()
-	if err != nil {
-		logrus.Errorf("failed to reconcile release for %s: %s", util.ResourceString(o), err)
-		return reconcile.Result{}, err
-	}
-
-	if needsUpdate {
-		status := types.StatusFor(o)
-		status.SetRelease(updatedRelease)
-		// TODO(alecmerdler): Call `status.SetPhase()` with `NOTES.txt` of rendered Chart
-		status.SetPhase(types.PhaseApplied, types.ReasonApplySuccessful, "")
-		o.Object["status"] = status
-
 		err = r.Client.Update(context.TODO(), o)
+		return reconcile.Result{}, err
+	}
+
+	if !manager.IsInstalled() {
+		installedRelease, err := manager.InstallRelease()
 		if err != nil {
-			logrus.Errorf("failed to update resource status for %s: %s", util.ResourceString(o), err)
+			logrus.Errorf("failed to install release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
 			return reconcile.Result{}, err
 		}
+		diff := util.Diff("", installedRelease.GetManifest())
+		logrus.Infof("Installed release for %s release=%s; diff:\n%s", util.ResourceString(o), releaseName, diff)
+
+		status.SetRelease(installedRelease)
+		status.SetPhase(types.PhaseApplied, types.ReasonApplySuccessful, installedRelease.GetInfo().GetStatus().GetNotes())
+		err = r.updateResource(o, status)
+		return reconcile.Result{RequeueAfter: r.ResyncPeriod}, err
 	}
 
+	if manager.IsUpdateRequired() {
+		previousRelease, updatedRelease, err := manager.UpdateRelease()
+		if err != nil {
+			logrus.Errorf("failed to update release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
+			return reconcile.Result{}, err
+		}
+		diff := util.Diff(previousRelease.GetManifest(), updatedRelease.GetManifest())
+		logrus.Infof("Updated release for %s release=%s; diff:\n%s", util.ResourceString(o), releaseName, diff)
+
+		status.SetRelease(updatedRelease)
+		status.SetPhase(types.PhaseApplied, types.ReasonApplySuccessful, updatedRelease.GetInfo().GetStatus().GetNotes())
+		err = r.updateResource(o, status)
+		return reconcile.Result{RequeueAfter: r.ResyncPeriod}, err
+	}
+
+	_, err = manager.ReconcileRelease()
+	if err != nil {
+		logrus.Errorf("failed to reconcile release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
+		return reconcile.Result{}, err
+	}
+	logrus.Infof("Reconciled release for %s release=%s", util.ResourceString(o), releaseName)
+
 	return reconcile.Result{RequeueAfter: r.ResyncPeriod}, nil
+}
+
+func (r HelmOperatorReconciler) updateResource(o *unstructured.Unstructured, status *types.HelmAppStatus) error {
+	o.Object["status"] = status
+	return r.Client.Update(context.TODO(), o)
 }
 
 func contains(l []string, s string) bool {

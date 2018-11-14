@@ -48,6 +48,10 @@ import (
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/internal/util"
 )
 
+// ManagerFactory creates Managers that are specific to custom resources. It is
+// used by the HelmOperatorReconciler during resource reconciliation, and it
+// improves decoupling between reconciliation logic and the Helm backend
+// components used to manage releases.
 type ManagerFactory interface {
 	NewManager(r *unstructured.Unstructured) Manager
 }

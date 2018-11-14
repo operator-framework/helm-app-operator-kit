@@ -416,14 +416,13 @@ func processRequirements(chart *cpb.Chart, values *cpb.Config) error {
 	return nil
 }
 
-func shortenUID(uid apitypes.UID) (shortUID string) {
+func shortenUID(uid apitypes.UID) string {
 	u := uuid.Parse(string(uid))
 	uidBytes, err := u.MarshalBinary()
 	if err != nil {
-		shortUID = strings.Replace(string(uid), "-", "", -1)
+		return strings.Replace(string(uid), "-", "", -1)
 	}
-	shortUID = strings.ToLower(base36.EncodeBytes(uidBytes))
-	return
+	return strings.ToLower(base36.EncodeBytes(uidBytes))
 }
 
 func (m manager) getDeployedRelease() (*rpb.Release, error) {

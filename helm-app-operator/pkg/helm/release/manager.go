@@ -35,6 +35,7 @@ import (
 	"k8s.io/helm/pkg/kube"
 	cpb "k8s.io/helm/pkg/proto/hapi/chart"
 	"k8s.io/helm/pkg/proto/hapi/release"
+	rpb "k8s.io/helm/pkg/proto/hapi/release"
 	"k8s.io/helm/pkg/proto/hapi/services"
 	"k8s.io/helm/pkg/storage"
 	"k8s.io/helm/pkg/tiller"
@@ -47,59 +48,101 @@ import (
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/internal/util"
 )
 
-// Manager can install and uninstall Helm releases given a custom resource
-// which provides runtime values for the Chart.
+// ManagerFactory creates Managers that are specific to custom resources. It is
+// used by the HelmOperatorReconciler during resource reconciliation, and it
+// improves decoupling between reconciliation logic and the Helm backend
+// components used to manage releases.
+type ManagerFactory interface {
+	NewManager(r *unstructured.Unstructured) Manager
+}
+
+type managerFactory struct {
+	storageBackend   *storage.Storage
+	tillerKubeClient *kube.Client
+	chartDir         string
+}
+
+func (f managerFactory) NewManager(r *unstructured.Unstructured) Manager {
+	return f.newManagerForCR(r)
+}
+
+func (f managerFactory) newManagerForCR(r *unstructured.Unstructured) Manager {
+	return &manager{
+		storageBackend:   f.storageBackend,
+		tillerKubeClient: f.tillerKubeClient,
+		chartDir:         f.chartDir,
+
+		tiller:      f.tillerRendererForCR(r),
+		releaseName: getReleaseName(r),
+		namespace:   r.GetNamespace(),
+
+		resource: r,
+		spec:     r.Object["spec"],
+		status:   types.StatusFor(r),
+	}
+}
+
+// Manager manages a Helm release. It can install, update, reconcile,
+// and uninstall a release.
 type Manager interface {
-	ReconcileRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, bool, error)
-	UninstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	ReconcileRelease() (*rpb.Release, bool, error)
+	UninstallRelease() (*rpb.Release, error)
 }
 
 type manager struct {
 	storageBackend   *storage.Storage
 	tillerKubeClient *kube.Client
 	chartDir         string
+
+	tiller      *tiller.ReleaseServer
+	releaseName string
+	namespace   string
+
+	resource *unstructured.Unstructured
+	spec     interface{}
+	status   *types.HelmAppStatus
 }
 
-// ReconcileRelease accepts a custom resource, ensures the described release is deployed,
-// and returns the custom resource with updated `status`.
-// - If the custom resource does not have a release, a new release will be installed
-// - If the custom resource has changes for an existing release, the release will be updated
-// - If the custom resource has no changes for an existing release, the underlying resources will be reconciled.
-func (m manager) ReconcileRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, bool, error) {
+// ReconcileRelease ensures the managed release is reconciled,
+// and returns the updated release if successful (or an error otherwise).
+// - If the release is not already installed, a new release will be installed.
+// - If the release has changed, the release will be updated.
+// - If the release has no changes, the underlying resources will be reconciled.
+func (m manager) ReconcileRelease() (*rpb.Release, bool, error) {
 	needsUpdate := false
 
 	// chart is mutated by the call to processRequirements,
 	// so we need to reload it from disk every time.
 	chart, err := chartutil.LoadDir(m.chartDir)
 	if err != nil {
-		return r, needsUpdate, fmt.Errorf("failed to load chart: %s", err)
+		return nil, needsUpdate, fmt.Errorf("failed to load chart: %s", err)
 	}
 
-	cr, err := valuesFromResource(r)
+	cr, err := yaml.Marshal(m.spec)
 	if err != nil {
-		return r, needsUpdate, fmt.Errorf("failed to parse values: %s", err)
+		return nil, needsUpdate, fmt.Errorf("failed to parse values: %s", err)
 	}
 	config := &cpb.Config{Raw: string(cr)}
 	logrus.Debugf("Using values: %s", config.GetRaw())
 
 	err = processRequirements(chart, config)
 	if err != nil {
-		return r, needsUpdate, fmt.Errorf("failed to process chart requirements: %s", err)
+		return nil, needsUpdate, fmt.Errorf("failed to process chart requirements: %s", err)
 	}
 
-	tiller := m.tillerRendererForCR(r)
+	tiller := m.tiller
 
-	status := types.StatusFor(r)
+	status := m.status
 	if err := m.syncReleaseStatus(*status); err != nil {
-		return r, needsUpdate, fmt.Errorf("failed to sync release status: %s", err)
+		return nil, needsUpdate, fmt.Errorf("failed to sync release status: %s", err)
 	}
 
-	releaseName := getReleaseName(r)
+	releaseName := m.releaseName
 
 	// Get release history for this release name
 	releases, err := m.storageBackend.History(releaseName)
 	if err != nil && !notFoundErr(err) {
-		return r, needsUpdate, fmt.Errorf("failed to retrieve release history: %s", err)
+		return nil, needsUpdate, fmt.Errorf("failed to retrieve release history: %s", err)
 	}
 
 	// Cleanup non-deployed release versions. If all release versions are
@@ -109,7 +152,7 @@ func (m manager) ReconcileRelease(r *unstructured.Unstructured) (*unstructured.U
 		if rel.GetInfo().GetStatus().GetCode() != release.Status_DEPLOYED {
 			_, err := m.storageBackend.Delete(rel.GetName(), rel.GetVersion())
 			if err != nil && !notFoundErr(err) {
-				return r, needsUpdate, fmt.Errorf("failed to delete stale release version: %s", err)
+				return nil, needsUpdate, fmt.Errorf("failed to delete stale release version: %s", err)
 			}
 		}
 	}
@@ -118,75 +161,68 @@ func (m manager) ReconcileRelease(r *unstructured.Unstructured) (*unstructured.U
 	latestRelease, err := m.storageBackend.Deployed(releaseName)
 	if err != nil || latestRelease == nil {
 		// If there's no deployed release, attempt a tiller install.
-		updatedRelease, err = m.installRelease(tiller, r.GetNamespace(), releaseName, chart, config)
+		updatedRelease, err = m.installRelease(tiller, m.namespace, releaseName, chart, config)
 		if err != nil {
-			return r, needsUpdate, fmt.Errorf("install error: %s", err)
+			return nil, needsUpdate, fmt.Errorf("install error: %s", err)
 		}
 		needsUpdate = true
 		diffStr := util.Diff("", updatedRelease.GetManifest())
-		logrus.Infof("Installed release for %s release=%s; diff:\n%s", util.ResourceString(r), updatedRelease.GetName(), diffStr)
+		logrus.Infof("Installed release for %s release=%s; diff:\n%s", util.ResourceString(m.resource), updatedRelease.GetName(), diffStr)
 	} else {
 		candidateRelease, err := m.getCandidateRelease(tiller, releaseName, chart, config)
 		if err != nil {
-			return r, needsUpdate, fmt.Errorf("failed to generate candidate release: %s", err)
+			return nil, needsUpdate, fmt.Errorf("failed to generate candidate release: %s", err)
 		}
 
 		latestManifest := latestRelease.GetManifest()
 		if latestManifest == candidateRelease.GetManifest() {
-			err = m.reconcileRelease(r.GetNamespace(), latestManifest)
+			err = m.reconcileRelease(m.namespace, latestManifest)
 			if err != nil {
-				return r, needsUpdate, fmt.Errorf("reconcile error: %s", err)
+				return nil, needsUpdate, fmt.Errorf("reconcile error: %s", err)
 			}
 			updatedRelease = latestRelease
-			logrus.Infof("Reconciled release for %s release=%s", util.ResourceString(r), updatedRelease.GetName())
+			logrus.Infof("Reconciled release for %s release=%s", util.ResourceString(m.resource), updatedRelease.GetName())
 		} else {
 			updatedRelease, err = m.updateRelease(tiller, releaseName, chart, config)
 			if err != nil {
-				return r, needsUpdate, fmt.Errorf("update error: %s", err)
+				return nil, needsUpdate, fmt.Errorf("update error: %s", err)
 			}
 			needsUpdate = true
 			diffStr := util.Diff(latestManifest, updatedRelease.GetManifest())
-			logrus.Infof("Updated release for %s release=%s; diff:\n%s", util.ResourceString(r), updatedRelease.GetName(), diffStr)
+			logrus.Infof("Updated release for %s release=%s; diff:\n%s", util.ResourceString(m.resource), updatedRelease.GetName(), diffStr)
 		}
 	}
-
-	status = types.StatusFor(r)
-	status.SetRelease(updatedRelease)
-	// TODO(alecmerdler): Call `status.SetPhase()` with `NOTES.txt` of rendered Chart
-	status.SetPhase(types.PhaseApplied, types.ReasonApplySuccessful, "")
-	r.Object["status"] = status
-
-	return r, needsUpdate, nil
+	return updatedRelease, needsUpdate, nil
 }
 
-// UninstallRelease accepts a custom resource, uninstalls the existing Helm release
-// using Tiller, and returns the custom resource with updated `status`.
-func (m manager) UninstallRelease(r *unstructured.Unstructured) (*unstructured.Unstructured, error) {
-	releaseName := getReleaseName(r)
+// UninstallRelease uninstalls the managed release.
+func (m manager) UninstallRelease() (*rpb.Release, error) {
+	releaseName := m.releaseName
 
 	// Get history of this release
 	h, err := m.storageBackend.History(releaseName)
 	if err != nil {
-		return r, fmt.Errorf("failed to get release history: %s", err)
+		return nil, fmt.Errorf("failed to get release history: %s", err)
 	}
 
 	// If there is no history, the release has already been uninstalled,
 	// so there's nothing to do.
 	if len(h) == 0 {
-		return r, nil
+		return nil, nil
 	}
 
-	tiller := m.tillerRendererForCR(r)
+	tiller := m.tiller
 	uninstallResponse, err := tiller.UninstallRelease(context.TODO(), &services.UninstallReleaseRequest{
 		Name:  releaseName,
 		Purge: true,
 	})
 	if err != nil {
-		return r, err
+		return nil, err
 	}
-	diffStr := util.Diff(uninstallResponse.GetRelease().GetManifest(), "")
-	logrus.Infof("Uninstalled release for %s release=%s; diff:\n%s", util.ResourceString(r), releaseName, diffStr)
-	return r, nil
+	uninstalledRelease := uninstallResponse.GetRelease()
+	diffStr := util.Diff(uninstalledRelease.GetManifest(), "")
+	logrus.Infof("Uninstalled release for %s release=%s; diff:\n%s", util.ResourceString(m.resource), releaseName, diffStr)
+	return uninstalledRelease, nil
 }
 
 func (m manager) installRelease(tiller *tiller.ReleaseServer, namespace, name string, chart *cpb.Chart, config *cpb.Config) (*release.Release, error) {
@@ -305,7 +341,7 @@ func (m manager) syncReleaseStatus(status types.HelmAppStatus) error {
 
 // tillerRendererForCR creates a ReleaseServer configured with a rendering engine that adds ownerrefs to rendered assets
 // based on the CR.
-func (m manager) tillerRendererForCR(r *unstructured.Unstructured) *tiller.ReleaseServer {
+func (f managerFactory) tillerRendererForCR(r *unstructured.Unstructured) *tiller.ReleaseServer {
 	controllerRef := metav1.NewControllerRef(r, r.GroupVersionKind())
 	ownerRefs := []metav1.OwnerReference{
 		*controllerRef,
@@ -317,10 +353,10 @@ func (m manager) tillerRendererForCR(r *unstructured.Unstructured) *tiller.Relea
 	}
 	env := &environment.Environment{
 		EngineYard: ey,
-		Releases:   m.storageBackend,
-		KubeClient: m.tillerKubeClient,
+		Releases:   f.storageBackend,
+		KubeClient: f.tillerKubeClient,
 	}
-	kubeconfig, _ := m.tillerKubeClient.ToRESTConfig()
+	kubeconfig, _ := f.tillerKubeClient.ToRESTConfig()
 	internalClientSet, _ := internalclientset.NewForConfig(kubeconfig)
 
 	return tiller.NewReleaseServer(env, internalClientSet, false)

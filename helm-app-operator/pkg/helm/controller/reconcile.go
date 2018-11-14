@@ -79,7 +79,7 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 	status := types.StatusFor(o)
 	releaseName := manager.ReleaseName()
 
-	if err := manager.Sync(); err != nil {
+	if err := manager.Sync(context.TODO()); err != nil {
 		logrus.Errorf("failed to sync release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
 		return reconcile.Result{}, err
 	}
@@ -90,7 +90,7 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 			return reconcile.Result{}, nil
 		}
 
-		uninstalledRelease, err := manager.UninstallRelease()
+		uninstalledRelease, err := manager.UninstallRelease(context.TODO())
 		if err != nil && err != release.ErrNotFound {
 			logrus.Errorf("failed to uninstall release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
 			return reconcile.Result{}, err
@@ -113,7 +113,7 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 	}
 
 	if !manager.IsInstalled() {
-		installedRelease, err := manager.InstallRelease()
+		installedRelease, err := manager.InstallRelease(context.TODO())
 		if err != nil {
 			logrus.Errorf("failed to install release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
 			return reconcile.Result{}, err
@@ -128,7 +128,7 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 	}
 
 	if manager.IsUpdateRequired() {
-		previousRelease, updatedRelease, err := manager.UpdateRelease()
+		previousRelease, updatedRelease, err := manager.UpdateRelease(context.TODO())
 		if err != nil {
 			logrus.Errorf("failed to update release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
 			return reconcile.Result{}, err
@@ -142,7 +142,7 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 		return reconcile.Result{RequeueAfter: r.ResyncPeriod}, err
 	}
 
-	_, err = manager.ReconcileRelease()
+	_, err = manager.ReconcileRelease(context.TODO())
 	if err != nil {
 		logrus.Errorf("failed to reconcile release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
 		return reconcile.Result{}, err

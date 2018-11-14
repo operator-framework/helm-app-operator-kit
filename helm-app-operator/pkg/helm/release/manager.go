@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	apitypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	"k8s.io/helm/pkg/chartutil"
 	helmengine "k8s.io/helm/pkg/engine"
 	"k8s.io/helm/pkg/kube"
@@ -91,11 +92,11 @@ type Manager interface {
 	ReleaseName() string
 	IsInstalled() bool
 	IsUpdateRequired() bool
-	Sync() error
-	InstallRelease() (*rpb.Release, error)
-	UpdateRelease() (*rpb.Release, *rpb.Release, error)
-	ReconcileRelease() (*rpb.Release, error)
-	UninstallRelease() (*rpb.Release, error)
+	Sync(context.Context) error
+	InstallRelease(context.Context) (*rpb.Release, error)
+	UpdateRelease(context.Context) (*rpb.Release, *rpb.Release, error)
+	ReconcileRelease(context.Context) (*rpb.Release, error)
+	UninstallRelease(context.Context) (*rpb.Release, error)
 }
 
 type manager struct {
@@ -149,7 +150,7 @@ func (m manager) loadChartAndConfig() (*cpb.Chart, *cpb.Config, error) {
 
 // Sync ensures the Helm storage backend is in sync with the status of the
 // custom resource.
-func (m *manager) Sync() error {
+func (m *manager) Sync(ctx context.Context) error {
 	if err := m.syncReleaseStatus(*m.status); err != nil {
 		return fmt.Errorf("failed to sync release status to storage backend: %s", err)
 	}
@@ -192,7 +193,7 @@ func (m *manager) Sync() error {
 	m.isInstalled = true
 
 	// Get the next candidate release to determine if an update is necessary.
-	candidateRelease, err := m.getCandidateRelease(m.tiller, m.releaseName, chart, config)
+	candidateRelease, err := m.getCandidateRelease(ctx, m.tiller, m.releaseName, chart, config)
 	if err != nil {
 		return fmt.Errorf("failed to get candidate release: %s", err)
 	}
@@ -209,29 +210,29 @@ func (m manager) ReleaseName() string {
 }
 
 // InstallRelease performs a Helm release install.
-func (m manager) InstallRelease() (*rpb.Release, error) {
-	return installRelease(m.tiller, m.namespace, m.releaseName, m.chart, m.config)
+func (m manager) InstallRelease(ctx context.Context) (*rpb.Release, error) {
+	return installRelease(ctx, m.tiller, m.namespace, m.releaseName, m.chart, m.config)
 }
 
 // UpdateRelease performs a Helm release update.
-func (m manager) UpdateRelease() (*rpb.Release, *rpb.Release, error) {
-	updatedRelease, err := updateRelease(m.tiller, m.releaseName, m.chart, m.config)
+func (m manager) UpdateRelease(ctx context.Context) (*rpb.Release, *rpb.Release, error) {
+	updatedRelease, err := updateRelease(ctx, m.tiller, m.releaseName, m.chart, m.config)
 	return m.deployedRelease, updatedRelease, err
 }
 
 // ReconcileRelease creates or patches resources as necessary to match the
 // deployed release's manifest.
-func (m manager) ReconcileRelease() (*rpb.Release, error) {
-	err := reconcileRelease(m.tillerKubeClient, m.namespace, m.deployedRelease.GetManifest())
+func (m manager) ReconcileRelease(ctx context.Context) (*rpb.Release, error) {
+	err := reconcileRelease(ctx, m.tillerKubeClient, m.namespace, m.deployedRelease.GetManifest())
 	return m.deployedRelease, err
 }
 
 // UninstallRelease performs a Helm release uninstall.
-func (m manager) UninstallRelease() (*rpb.Release, error) {
-	return uninstallRelease(m.storageBackend, m.tiller, m.releaseName)
+func (m manager) UninstallRelease(ctx context.Context) (*rpb.Release, error) {
+	return uninstallRelease(ctx, m.storageBackend, m.tiller, m.releaseName)
 }
 
-func uninstallRelease(storageBackend *storage.Storage, tiller *tiller.ReleaseServer, releaseName string) (*rpb.Release, error) {
+func uninstallRelease(ctx context.Context, storageBackend *storage.Storage, tiller *tiller.ReleaseServer, releaseName string) (*rpb.Release, error) {
 	// Get history of this release
 	h, err := storageBackend.History(releaseName)
 	if err != nil {
@@ -244,14 +245,14 @@ func uninstallRelease(storageBackend *storage.Storage, tiller *tiller.ReleaseSer
 		return nil, ErrNotFound
 	}
 
-	uninstallResponse, err := tiller.UninstallRelease(context.TODO(), &services.UninstallReleaseRequest{
+	uninstallResponse, err := tiller.UninstallRelease(ctx, &services.UninstallReleaseRequest{
 		Name:  releaseName,
 		Purge: true,
 	})
 	return uninstallResponse.GetRelease(), err
 }
 
-func installRelease(tiller *tiller.ReleaseServer, namespace, name string, chart *cpb.Chart, config *cpb.Config) (*rpb.Release, error) {
+func installRelease(ctx context.Context, tiller *tiller.ReleaseServer, namespace, name string, chart *cpb.Chart, config *cpb.Config) (*rpb.Release, error) {
 	installReq := &services.InstallReleaseRequest{
 		Namespace: namespace,
 		Name:      name,
@@ -259,7 +260,7 @@ func installRelease(tiller *tiller.ReleaseServer, namespace, name string, chart 
 		Values:    config,
 	}
 
-	releaseResponse, err := tiller.InstallRelease(context.TODO(), installReq)
+	releaseResponse, err := tiller.InstallRelease(ctx, installReq)
 	if err != nil {
 		// Workaround for helm/helm#3338
 		if releaseResponse.GetRelease() != nil {
@@ -267,7 +268,7 @@ func installRelease(tiller *tiller.ReleaseServer, namespace, name string, chart 
 				Name:  releaseResponse.GetRelease().GetName(),
 				Purge: true,
 			}
-			_, uninstallErr := tiller.UninstallRelease(context.TODO(), uninstallReq)
+			_, uninstallErr := tiller.UninstallRelease(ctx, uninstallReq)
 			if uninstallErr != nil {
 				return nil, fmt.Errorf("failed to roll back failed installation: %s: %s", uninstallErr, err)
 			}
@@ -277,14 +278,14 @@ func installRelease(tiller *tiller.ReleaseServer, namespace, name string, chart 
 	return releaseResponse.GetRelease(), nil
 }
 
-func updateRelease(tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, config *cpb.Config) (*rpb.Release, error) {
+func updateRelease(ctx context.Context, tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, config *cpb.Config) (*rpb.Release, error) {
 	updateReq := &services.UpdateReleaseRequest{
 		Name:   name,
 		Chart:  chart,
 		Values: config,
 	}
 
-	releaseResponse, err := tiller.UpdateRelease(context.TODO(), updateReq)
+	releaseResponse, err := tiller.UpdateRelease(ctx, updateReq)
 	if err != nil {
 		// Workaround for helm/helm#3338
 		if releaseResponse.GetRelease() != nil {
@@ -292,7 +293,7 @@ func updateRelease(tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, 
 				Name:  name,
 				Force: true,
 			}
-			_, rollbackErr := tiller.RollbackRelease(context.TODO(), rollbackReq)
+			_, rollbackErr := tiller.RollbackRelease(ctx, rollbackReq)
 			if rollbackErr != nil {
 				return nil, fmt.Errorf("failed to roll back failed update: %s: %s", rollbackErr, err)
 			}
@@ -302,7 +303,7 @@ func updateRelease(tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, 
 	return releaseResponse.GetRelease(), nil
 }
 
-func reconcileRelease(tillerKubeClient *kube.Client, namespace string, expectedManifest string) error {
+func reconcileRelease(ctx context.Context, tillerKubeClient *kube.Client, namespace string, expectedManifest string) error {
 	expectedInfos, err := tillerKubeClient.BuildUnstructured(namespace, bytes.NewBufferString(expectedManifest))
 	if err != nil {
 		return err
@@ -311,7 +312,11 @@ func reconcileRelease(tillerKubeClient *kube.Client, namespace string, expectedM
 		if err != nil {
 			return err
 		}
-		helper := resource.NewHelper(expected.Client, expected.Mapping)
+
+		expectedClient := resource.NewClientWithOptions(expected.Client, func(r *rest.Request) {
+			*r = *r.Context(ctx)
+		})
+		helper := resource.NewHelper(expectedClient, expected.Mapping)
 		_, err = helper.Create(expected.Namespace, true, expected.Object)
 		if err == nil {
 			return nil
@@ -333,14 +338,14 @@ func reconcileRelease(tillerKubeClient *kube.Client, namespace string, expectedM
 	})
 }
 
-func (m manager) getCandidateRelease(tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, config *cpb.Config) (*rpb.Release, error) {
+func (m manager) getCandidateRelease(ctx context.Context, tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, config *cpb.Config) (*rpb.Release, error) {
 	dryRunReq := &services.UpdateReleaseRequest{
 		Name:   name,
 		Chart:  chart,
 		Values: config,
 		DryRun: true,
 	}
-	dryRunResponse, err := tiller.UpdateRelease(context.TODO(), dryRunReq)
+	dryRunResponse, err := tiller.UpdateRelease(ctx, dryRunReq)
 	if err != nil {
 		return nil, err
 	}

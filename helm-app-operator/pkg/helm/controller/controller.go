@@ -19,17 +19,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	crthandler "sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/release"
 )
+
+var log = logf.Log.WithName("helm.controller")
 
 // WatchOptions contains the necessary values to create a new controller that
 // manages helm releases in a particular namespace based on a GVK watch.
@@ -41,7 +43,7 @@ type WatchOptions struct {
 }
 
 // Add creates a new helm operator controller and adds it to the manager
-func Add(mgr manager.Manager, options WatchOptions) {
+func Add(mgr manager.Manager, options WatchOptions) error {
 	if options.ResyncPeriod == 0 {
 		options.ResyncPeriod = time.Minute
 	}
@@ -59,14 +61,15 @@ func Add(mgr manager.Manager, options WatchOptions) {
 	controllerName := fmt.Sprintf("%v-controller", strings.ToLower(options.GVK.Kind))
 	c, err := controller.New(controllerName, mgr, controller.Options{Reconciler: r})
 	if err != nil {
-		logrus.Fatal(err)
+		return err
 	}
 
 	o := &unstructured.Unstructured{}
 	o.SetGroupVersionKind(options.GVK)
 	if err := c.Watch(&source.Kind{Type: o}, &crthandler.EnqueueRequestForObject{}); err != nil {
-		logrus.Fatal(err)
+		return err
 	}
 
-	logrus.Infof("Watching %s, %s, %s, %d", options.GVK.GroupVersion(), options.GVK.Kind, options.Namespace, options.ResyncPeriod)
+	log.Info("Watching resource", "apiVersion", options.GVK.GroupVersion(), "kind", options.GVK.Kind, "namespace", options.Namespace, "resyncPeriod", options.ResyncPeriod.String())
+	return nil
 }

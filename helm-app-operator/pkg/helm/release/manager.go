@@ -22,8 +22,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sirupsen/logrus"
-
 	yaml "gopkg.in/yaml.v2"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apitypes "k8s.io/apimachinery/pkg/types"
@@ -181,7 +179,6 @@ func (m manager) loadChartAndConfig() (*cpb.Chart, *cpb.Config, error) {
 		return nil, nil, fmt.Errorf("failed to parse values: %s", err)
 	}
 	config := &cpb.Config{Raw: string(cr)}
-	logrus.Debugf("Using values: %s", config.GetRaw())
 
 	err = processRequirements(chart, config)
 	if err != nil {

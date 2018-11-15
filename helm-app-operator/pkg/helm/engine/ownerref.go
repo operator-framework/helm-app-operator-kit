@@ -15,13 +15,11 @@
 package engine
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 	"strings"
 
-	"bytes"
-
-	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -52,13 +50,11 @@ func (o *OwnerRefEngine) Render(chart *chart.Chart, values chartutil.Values) (ma
 		if !strings.HasSuffix(fileName, ".yaml") {
 			continue
 		}
-		logrus.Debugf("adding ownerrefs to file: %s", fileName)
 		withOwner, err := o.addOwnerRefs(renderedFile)
 		if err != nil {
 			return nil, err
 		}
 		if withOwner == "" {
-			logrus.Debugf("skipping empty template: %s", fileName)
 			continue
 		}
 		ownedRenderedFiles[fileName] = withOwner

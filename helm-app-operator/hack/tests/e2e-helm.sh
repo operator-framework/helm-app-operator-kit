@@ -97,7 +97,7 @@ then
 fi
 
 kubectl delete -f deploy/cr.yaml --wait=true
-kubectl logs deployment/memcached-operator | grep "Uninstalled release for apiVersion=helm.example.com/v1alpha1 kind=Memcached name=default/my-test-app"
+kubectl logs deployment/memcached-operator | grep "Uninstalled release" | grep "${release_name}"
 
 popd
 popd

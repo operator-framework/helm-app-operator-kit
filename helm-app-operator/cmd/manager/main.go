@@ -16,16 +16,18 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"os"
 	"runtime"
 	"time"
 
 	k8sutil "github.com/operator-framework/operator-sdk/pkg/util/k8sutil"
 	sdkVersion "github.com/operator-framework/operator-sdk/version"
-	"github.com/sirupsen/logrus"
 	"k8s.io/helm/pkg/storage"
 	"k8s.io/helm/pkg/storage/driver"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/signals"
 
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/client"
@@ -33,19 +35,25 @@ import (
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/release"
 )
 
+var log = logf.Log.WithName("cmd")
+
 func printVersion() {
-	logrus.Infof("Go Version: %s", runtime.Version())
-	logrus.Infof("Go OS/Arch: %s/%s", runtime.GOOS, runtime.GOARCH)
-	logrus.Infof("operator-sdk Version: %v", sdkVersion.Version)
+	log.Info(fmt.Sprintf("Go Version: %s", runtime.Version()))
+	log.Info(fmt.Sprintf("Go OS/Arch: %s/%s", runtime.GOOS, runtime.GOARCH))
+	log.Info(fmt.Sprintf("operator-sdk Version: %v", sdkVersion.Version))
 }
 
 func main() {
-	printVersion()
 	flag.Parse()
+
+	logf.SetLogger(logf.ZapLogger(false))
+
+	printVersion()
 
 	namespace, err := k8sutil.GetWatchNamespace()
 	if err != nil {
-		logrus.Fatalf("failed to get watch namespace: %v", err)
+		log.Error(err, "failed to get watch namespace")
+		os.Exit(1)
 	}
 
 	// TODO: Expose metrics port after SDK uses controller-runtime's dynamic client
@@ -53,40 +61,51 @@ func main() {
 
 	cfg, err := config.GetConfig()
 	if err != nil {
-		logrus.Fatal(err)
+		log.Error(err, "")
+		os.Exit(1)
 	}
 
 	mgr, err := manager.New(cfg, manager.Options{Namespace: namespace})
 	if err != nil {
-		logrus.Fatal(err)
+		log.Error(err, "")
+		os.Exit(1)
 	}
 
-	logrus.Print("Registering Components.")
+	log.Info("Registering Components.")
 
 	// Create Tiller's storage backend and kubernetes client
 	storageBackend := storage.Init(driver.NewMemory())
 	tillerKubeClient, err := client.NewFromManager(mgr)
 	if err != nil {
-		logrus.Fatal(err)
+		log.Error(err, "")
+		os.Exit(1)
 	}
 
 	factories, err := release.NewManagerFactoriesFromEnv(storageBackend, tillerKubeClient)
 	if err != nil {
-		logrus.Fatal(err)
+		log.Error(err, "")
+		os.Exit(1)
 	}
 
 	for gvk, factory := range factories {
 		// Register the controller with the factory.
-		controller.Add(mgr, controller.WatchOptions{
+		err := controller.Add(mgr, controller.WatchOptions{
 			Namespace:      namespace,
 			GVK:            gvk,
 			ManagerFactory: factory,
 			ResyncPeriod:   5 * time.Second,
 		})
+		if err != nil {
+			log.Error(err, "")
+			os.Exit(1)
+		}
 	}
 
-	logrus.Print("Starting the Cmd.")
+	log.Info("Starting the Cmd.")
 
 	// Start the Cmd
-	logrus.Fatal(mgr.Start(signals.SetupSignalHandler()))
+	if err := mgr.Start(signals.SetupSignalHandler()); err != nil {
+		log.Error(err, "manager exited non-zero")
+		os.Exit(1)
+	}
 }

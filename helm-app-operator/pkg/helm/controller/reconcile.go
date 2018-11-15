@@ -16,9 +16,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
-
-	"github.com/sirupsen/logrus"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -54,52 +53,60 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 	o.SetGroupVersionKind(r.GVK)
 	o.SetNamespace(request.Namespace)
 	o.SetName(request.Name)
-	logrus.Debugf("Processing %s", util.ResourceString(o))
+	log := log.WithValues(
+		"namespace", o.GetNamespace(),
+		"name", o.GetName(),
+		"apiVersion", o.GetAPIVersion(),
+		"kind", o.GetKind(),
+	)
+	log.V(1).Info("Reconciling")
 
 	err := r.Client.Get(context.TODO(), request.NamespacedName, o)
 	if apierrors.IsNotFound(err) {
 		return reconcile.Result{}, nil
 	}
 	if err != nil {
-		logrus.Errorf("failed to lookup %s: %s", util.ResourceString(o), err)
+		log.Error(err, "failed to lookup resource")
 		return reconcile.Result{}, err
 	}
+
+	manager := r.ManagerFactory.NewManager(o)
+	status := types.StatusFor(o)
+	log = log.WithValues("release", manager.ReleaseName())
 
 	deleted := o.GetDeletionTimestamp() != nil
 	pendingFinalizers := o.GetFinalizers()
 	if !deleted && !contains(pendingFinalizers, finalizer) {
-		logrus.Debugf("Adding finalizer \"%s\" to %s", finalizer, util.ResourceString(o))
+		log.V(1).Info("Adding finalizer", "finalizer", finalizer)
 		finalizers := append(pendingFinalizers, finalizer)
 		o.SetFinalizers(finalizers)
 		err := r.Client.Update(context.TODO(), o)
 		return reconcile.Result{}, err
 	}
 
-	manager := r.ManagerFactory.NewManager(o)
-	status := types.StatusFor(o)
-	releaseName := manager.ReleaseName()
-
 	if err := manager.Sync(context.TODO()); err != nil {
-		logrus.Errorf("failed to sync release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
+		log.Error(err, "failed to sync release")
 		return reconcile.Result{}, err
 	}
 
 	if deleted {
 		if !contains(pendingFinalizers, finalizer) {
-			logrus.Infof("Resource %s is terminated, skipping reconciliation", util.ResourceString(o))
+			log.Info("Resource is terminated, skipping reconciliation")
 			return reconcile.Result{}, nil
 		}
 
 		uninstalledRelease, err := manager.UninstallRelease(context.TODO())
 		if err != nil && err != release.ErrNotFound {
-			logrus.Errorf("failed to uninstall release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
+			log.Error(err, "failed to uninstall release")
 			return reconcile.Result{}, err
 		}
 		if err == release.ErrNotFound {
-			logrus.Infof("Release %s for resource %s not found, removing finalizer", releaseName, util.ResourceString(o))
+			log.Info("Release not found, removing finalizer")
 		} else {
-			diff := util.Diff(uninstalledRelease.GetManifest(), "")
-			logrus.Infof("Uninstalled release for %s release=%s; diff:\n%s", util.ResourceString(o), releaseName, diff)
+			log.Info("Uninstalled release")
+			if log.Enabled() {
+				fmt.Println(util.Diff(uninstalledRelease.GetManifest(), ""))
+			}
 		}
 		finalizers := []string{}
 		for _, pendingFinalizer := range pendingFinalizers {
@@ -115,12 +122,15 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 	if !manager.IsInstalled() {
 		installedRelease, err := manager.InstallRelease(context.TODO())
 		if err != nil {
-			logrus.Errorf("failed to install release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
+			log.Error(err, "failed to install release")
 			return reconcile.Result{}, err
 		}
-		diff := util.Diff("", installedRelease.GetManifest())
-		logrus.Infof("Installed release for %s release=%s; diff:\n%s", util.ResourceString(o), releaseName, diff)
 
+		log.Info("Installed release")
+		if log.Enabled() {
+			fmt.Println(util.Diff("", installedRelease.GetManifest()))
+		}
+		log.V(1).Info("Config values", "values", installedRelease.GetConfig())
 		status.SetRelease(installedRelease)
 		status.SetPhase(types.PhaseApplied, types.ReasonApplySuccessful, installedRelease.GetInfo().GetStatus().GetNotes())
 		err = r.updateResourceStatus(o, status)
@@ -130,12 +140,14 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 	if manager.IsUpdateRequired() {
 		previousRelease, updatedRelease, err := manager.UpdateRelease(context.TODO())
 		if err != nil {
-			logrus.Errorf("failed to update release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
+			log.Error(err, "failed to update release")
 			return reconcile.Result{}, err
 		}
-		diff := util.Diff(previousRelease.GetManifest(), updatedRelease.GetManifest())
-		logrus.Infof("Updated release for %s release=%s; diff:\n%s", util.ResourceString(o), releaseName, diff)
-
+		log.Info("Updated release")
+		if log.Enabled() {
+			fmt.Println(util.Diff(previousRelease.GetManifest(), updatedRelease.GetManifest()))
+		}
+		log.V(1).Info("Config values", "values", updatedRelease.GetConfig())
 		status.SetRelease(updatedRelease)
 		status.SetPhase(types.PhaseApplied, types.ReasonApplySuccessful, updatedRelease.GetInfo().GetStatus().GetNotes())
 		err = r.updateResourceStatus(o, status)
@@ -144,11 +156,11 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 
 	_, err = manager.ReconcileRelease(context.TODO())
 	if err != nil {
-		logrus.Errorf("failed to reconcile release for %s release=%s: %s", util.ResourceString(o), releaseName, err)
+		log.Error(err, "failed to reconcile release")
 		return reconcile.Result{}, err
 	}
-	logrus.Infof("Reconciled release for %s release=%s", util.ResourceString(o), releaseName)
 
+	log.Info("Reconciled release")
 	return reconcile.Result{RequeueAfter: r.ResyncPeriod}, nil
 }
 

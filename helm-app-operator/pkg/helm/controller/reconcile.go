@@ -123,7 +123,7 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 
 		status.SetRelease(installedRelease)
 		status.SetPhase(types.PhaseApplied, types.ReasonApplySuccessful, installedRelease.GetInfo().GetStatus().GetNotes())
-		err = r.updateResource(o, status)
+		err = r.updateResourceStatus(o, status)
 		return reconcile.Result{RequeueAfter: r.ResyncPeriod}, err
 	}
 
@@ -138,7 +138,7 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 
 		status.SetRelease(updatedRelease)
 		status.SetPhase(types.PhaseApplied, types.ReasonApplySuccessful, updatedRelease.GetInfo().GetStatus().GetNotes())
-		err = r.updateResource(o, status)
+		err = r.updateResourceStatus(o, status)
 		return reconcile.Result{RequeueAfter: r.ResyncPeriod}, err
 	}
 
@@ -152,7 +152,7 @@ func (r HelmOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.
 	return reconcile.Result{RequeueAfter: r.ResyncPeriod}, nil
 }
 
-func (r HelmOperatorReconciler) updateResource(o *unstructured.Unstructured, status *types.HelmAppStatus) error {
+func (r HelmOperatorReconciler) updateResourceStatus(o *unstructured.Unstructured, status *types.HelmAppStatus) error {
 	o.Object["status"] = status
 	return r.Client.Update(context.TODO(), o)
 }

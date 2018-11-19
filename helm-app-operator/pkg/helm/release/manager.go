@@ -22,29 +22,21 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/martinlindhe/base36"
-	"github.com/pborman/uuid"
 	"github.com/sirupsen/logrus"
 
 	yaml "gopkg.in/yaml.v2"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	apitypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/helm/pkg/chartutil"
-	helmengine "k8s.io/helm/pkg/engine"
 	"k8s.io/helm/pkg/kube"
 	cpb "k8s.io/helm/pkg/proto/hapi/chart"
 	rpb "k8s.io/helm/pkg/proto/hapi/release"
 	"k8s.io/helm/pkg/proto/hapi/services"
 	"k8s.io/helm/pkg/storage"
 	"k8s.io/helm/pkg/tiller"
-	"k8s.io/helm/pkg/tiller/environment"
-	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	"k8s.io/kubernetes/pkg/kubectl/genericclioptions/resource"
 
-	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/engine"
 	"github.com/operator-framework/helm-app-operator-kit/helm-app-operator/pkg/helm/internal/types"
 )
 
@@ -52,39 +44,6 @@ var (
 	// ErrNotFound indicates the release was not found.
 	ErrNotFound = errors.New("release not found")
 )
-
-// ManagerFactory creates Managers that are specific to custom resources. It is
-// used by the HelmOperatorReconciler during resource reconciliation, and it
-// improves decoupling between reconciliation logic and the Helm backend
-// components used to manage releases.
-type ManagerFactory interface {
-	NewManager(r *unstructured.Unstructured) Manager
-}
-
-type managerFactory struct {
-	storageBackend   *storage.Storage
-	tillerKubeClient *kube.Client
-	chartDir         string
-}
-
-func (f managerFactory) NewManager(r *unstructured.Unstructured) Manager {
-	return f.newManagerForCR(r)
-}
-
-func (f managerFactory) newManagerForCR(r *unstructured.Unstructured) Manager {
-	return &manager{
-		storageBackend:   f.storageBackend,
-		tillerKubeClient: f.tillerKubeClient,
-		chartDir:         f.chartDir,
-
-		tiller:      f.tillerRendererForCR(r),
-		releaseName: getReleaseName(r),
-		namespace:   r.GetNamespace(),
-
-		spec:   r.Object["spec"],
-		status: types.StatusFor(r),
-	}
-}
 
 // Manager manages a Helm release. It can install, update, reconcile,
 // and uninstall a release.
@@ -118,34 +77,17 @@ type manager struct {
 	config           *cpb.Config
 }
 
+// ReleaseName returns the name of the release.
+func (m manager) ReleaseName() string {
+	return m.releaseName
+}
+
 func (m manager) IsInstalled() bool {
 	return m.isInstalled
 }
 
 func (m manager) IsUpdateRequired() bool {
 	return m.isUpdateRequired
-}
-
-func (m manager) loadChartAndConfig() (*cpb.Chart, *cpb.Config, error) {
-	// chart is mutated by the call to processRequirements,
-	// so we need to reload it from disk every time.
-	chart, err := chartutil.LoadDir(m.chartDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to load chart: %s", err)
-	}
-
-	cr, err := yaml.Marshal(m.spec)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse values: %s", err)
-	}
-	config := &cpb.Config{Raw: string(cr)}
-	logrus.Debugf("Using values: %s", config.GetRaw())
-
-	err = processRequirements(chart, config)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to process chart requirements: %s", err)
-	}
-	return chart, config, nil
 }
 
 // Sync ensures the Helm storage backend is in sync with the status of the
@@ -204,52 +146,93 @@ func (m *manager) Sync(ctx context.Context) error {
 	return nil
 }
 
-// ReleaseName returns the name of the release.
-func (m manager) ReleaseName() string {
-	return m.releaseName
+func (m manager) syncReleaseStatus(status types.HelmAppStatus) error {
+	if status.Release == nil {
+		return nil
+	}
+
+	name := status.Release.GetName()
+	version := status.Release.GetVersion()
+	_, err := m.storageBackend.Get(name, version)
+	if err == nil {
+		return nil
+	}
+
+	if !notFoundErr(err) {
+		return err
+	}
+	return m.storageBackend.Create(status.Release)
+}
+
+func notFoundErr(err error) bool {
+	return strings.Contains(err.Error(), "not found")
+}
+
+func (m manager) loadChartAndConfig() (*cpb.Chart, *cpb.Config, error) {
+	// chart is mutated by the call to processRequirements,
+	// so we need to reload it from disk every time.
+	chart, err := chartutil.LoadDir(m.chartDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load chart: %s", err)
+	}
+
+	cr, err := yaml.Marshal(m.spec)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse values: %s", err)
+	}
+	config := &cpb.Config{Raw: string(cr)}
+	logrus.Debugf("Using values: %s", config.GetRaw())
+
+	err = processRequirements(chart, config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to process chart requirements: %s", err)
+	}
+	return chart, config, nil
+}
+
+// processRequirements will process the requirements file
+// It will disable/enable the charts based on condition in requirements file
+// Also imports the specified chart values from child to parent.
+func processRequirements(chart *cpb.Chart, values *cpb.Config) error {
+	err := chartutil.ProcessRequirementsEnabled(chart, values)
+	if err != nil {
+		return err
+	}
+	err = chartutil.ProcessRequirementsImportValues(chart)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m manager) getDeployedRelease() (*rpb.Release, error) {
+	deployedRelease, err := m.storageBackend.Deployed(m.releaseName)
+	if err != nil {
+		if strings.Contains(err.Error(), "has no deployed releases") {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return deployedRelease, nil
+}
+
+func (m manager) getCandidateRelease(ctx context.Context, tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, config *cpb.Config) (*rpb.Release, error) {
+	dryRunReq := &services.UpdateReleaseRequest{
+		Name:   name,
+		Chart:  chart,
+		Values: config,
+		DryRun: true,
+	}
+	dryRunResponse, err := tiller.UpdateRelease(ctx, dryRunReq)
+	if err != nil {
+		return nil, err
+	}
+	return dryRunResponse.GetRelease(), nil
 }
 
 // InstallRelease performs a Helm release install.
 func (m manager) InstallRelease(ctx context.Context) (*rpb.Release, error) {
 	return installRelease(ctx, m.tiller, m.namespace, m.releaseName, m.chart, m.config)
-}
-
-// UpdateRelease performs a Helm release update.
-func (m manager) UpdateRelease(ctx context.Context) (*rpb.Release, *rpb.Release, error) {
-	updatedRelease, err := updateRelease(ctx, m.tiller, m.releaseName, m.chart, m.config)
-	return m.deployedRelease, updatedRelease, err
-}
-
-// ReconcileRelease creates or patches resources as necessary to match the
-// deployed release's manifest.
-func (m manager) ReconcileRelease(ctx context.Context) (*rpb.Release, error) {
-	err := reconcileRelease(ctx, m.tillerKubeClient, m.namespace, m.deployedRelease.GetManifest())
-	return m.deployedRelease, err
-}
-
-// UninstallRelease performs a Helm release uninstall.
-func (m manager) UninstallRelease(ctx context.Context) (*rpb.Release, error) {
-	return uninstallRelease(ctx, m.storageBackend, m.tiller, m.releaseName)
-}
-
-func uninstallRelease(ctx context.Context, storageBackend *storage.Storage, tiller *tiller.ReleaseServer, releaseName string) (*rpb.Release, error) {
-	// Get history of this release
-	h, err := storageBackend.History(releaseName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get release history: %s", err)
-	}
-
-	// If there is no history, the release has already been uninstalled,
-	// so return ErrNotFound.
-	if len(h) == 0 {
-		return nil, ErrNotFound
-	}
-
-	uninstallResponse, err := tiller.UninstallRelease(ctx, &services.UninstallReleaseRequest{
-		Name:  releaseName,
-		Purge: true,
-	})
-	return uninstallResponse.GetRelease(), err
 }
 
 func installRelease(ctx context.Context, tiller *tiller.ReleaseServer, namespace, name string, chart *cpb.Chart, config *cpb.Config) (*rpb.Release, error) {
@@ -278,6 +261,12 @@ func installRelease(ctx context.Context, tiller *tiller.ReleaseServer, namespace
 	return releaseResponse.GetRelease(), nil
 }
 
+// UpdateRelease performs a Helm release update.
+func (m manager) UpdateRelease(ctx context.Context) (*rpb.Release, *rpb.Release, error) {
+	updatedRelease, err := updateRelease(ctx, m.tiller, m.releaseName, m.chart, m.config)
+	return m.deployedRelease, updatedRelease, err
+}
+
 func updateRelease(ctx context.Context, tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, config *cpb.Config) (*rpb.Release, error) {
 	updateReq := &services.UpdateReleaseRequest{
 		Name:   name,
@@ -301,6 +290,13 @@ func updateRelease(ctx context.Context, tiller *tiller.ReleaseServer, name strin
 		return nil, err
 	}
 	return releaseResponse.GetRelease(), nil
+}
+
+// ReconcileRelease creates or patches resources as necessary to match the
+// deployed release's manifest.
+func (m manager) ReconcileRelease(ctx context.Context) (*rpb.Release, error) {
+	err := reconcileRelease(ctx, m.tillerKubeClient, m.namespace, m.deployedRelease.GetManifest())
+	return m.deployedRelease, err
 }
 
 func reconcileRelease(ctx context.Context, tillerKubeClient *kube.Client, namespace string, expectedManifest string) error {
@@ -338,100 +334,27 @@ func reconcileRelease(ctx context.Context, tillerKubeClient *kube.Client, namesp
 	})
 }
 
-func (m manager) getCandidateRelease(ctx context.Context, tiller *tiller.ReleaseServer, name string, chart *cpb.Chart, config *cpb.Config) (*rpb.Release, error) {
-	dryRunReq := &services.UpdateReleaseRequest{
-		Name:   name,
-		Chart:  chart,
-		Values: config,
-		DryRun: true,
-	}
-	dryRunResponse, err := tiller.UpdateRelease(ctx, dryRunReq)
+// UninstallRelease performs a Helm release uninstall.
+func (m manager) UninstallRelease(ctx context.Context) (*rpb.Release, error) {
+	return uninstallRelease(ctx, m.storageBackend, m.tiller, m.releaseName)
+}
+
+func uninstallRelease(ctx context.Context, storageBackend *storage.Storage, tiller *tiller.ReleaseServer, releaseName string) (*rpb.Release, error) {
+	// Get history of this release
+	h, err := storageBackend.History(releaseName)
 	if err != nil {
-		return nil, err
-	}
-	return dryRunResponse.GetRelease(), nil
-}
-
-func (m manager) syncReleaseStatus(status types.HelmAppStatus) error {
-	if status.Release == nil {
-		return nil
+		return nil, fmt.Errorf("failed to get release history: %s", err)
 	}
 
-	name := status.Release.GetName()
-	version := status.Release.GetVersion()
-	_, err := m.storageBackend.Get(name, version)
-	if err == nil {
-		return nil
+	// If there is no history, the release has already been uninstalled,
+	// so return ErrNotFound.
+	if len(h) == 0 {
+		return nil, ErrNotFound
 	}
 
-	if !notFoundErr(err) {
-		return err
-	}
-	return m.storageBackend.Create(status.Release)
-}
-
-// tillerRendererForCR creates a ReleaseServer configured with a rendering engine that adds ownerrefs to rendered assets
-// based on the CR.
-func (f managerFactory) tillerRendererForCR(r *unstructured.Unstructured) *tiller.ReleaseServer {
-	controllerRef := metav1.NewControllerRef(r, r.GroupVersionKind())
-	ownerRefs := []metav1.OwnerReference{
-		*controllerRef,
-	}
-	baseEngine := helmengine.New()
-	e := engine.NewOwnerRefEngine(baseEngine, ownerRefs)
-	var ey environment.EngineYard = map[string]environment.Engine{
-		environment.GoTplEngine: e,
-	}
-	env := &environment.Environment{
-		EngineYard: ey,
-		Releases:   f.storageBackend,
-		KubeClient: f.tillerKubeClient,
-	}
-	kubeconfig, _ := f.tillerKubeClient.ToRESTConfig()
-	internalClientSet, _ := internalclientset.NewForConfig(kubeconfig)
-
-	return tiller.NewReleaseServer(env, internalClientSet, false)
-}
-
-func getReleaseName(r *unstructured.Unstructured) string {
-	return fmt.Sprintf("%s-%s", r.GetName(), shortenUID(r.GetUID()))
-}
-
-func notFoundErr(err error) bool {
-	return strings.Contains(err.Error(), "not found")
-}
-
-// processRequirements will process the requirements file
-// It will disable/enable the charts based on condition in requirements file
-// Also imports the specified chart values from child to parent.
-func processRequirements(chart *cpb.Chart, values *cpb.Config) error {
-	err := chartutil.ProcessRequirementsEnabled(chart, values)
-	if err != nil {
-		return err
-	}
-	err = chartutil.ProcessRequirementsImportValues(chart)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func shortenUID(uid apitypes.UID) string {
-	u := uuid.Parse(string(uid))
-	uidBytes, err := u.MarshalBinary()
-	if err != nil {
-		return strings.Replace(string(uid), "-", "", -1)
-	}
-	return strings.ToLower(base36.EncodeBytes(uidBytes))
-}
-
-func (m manager) getDeployedRelease() (*rpb.Release, error) {
-	deployedRelease, err := m.storageBackend.Deployed(m.releaseName)
-	if err != nil {
-		if strings.Contains(err.Error(), "has no deployed releases") {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	return deployedRelease, nil
+	uninstallResponse, err := tiller.UninstallRelease(ctx, &services.UninstallReleaseRequest{
+		Name:  releaseName,
+		Purge: true,
+	})
+	return uninstallResponse.GetRelease(), err
 }
